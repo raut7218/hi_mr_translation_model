@@ -217,3 +217,13 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 Adivaani_Hiring_Assignment.pdf
+
+# NMT outputs
+outputs/
+mlruns/
+*.pt
+*.pth
+
+# SentencePiece
+*.model
+*.vocab

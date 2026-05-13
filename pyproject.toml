@@ -1,0 +1,20 @@
+[project]
+name = "hi-mr-nmt"
+version = "0.1.0"
+description = "Hindi-Marathi Neural Machine Translation (LSTM Seq2Seq + Attention)"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.2.0",
+    "sentencepiece>=0.2.0",
+    "pyyaml>=6.0",
+    "mlflow>=2.12.0",
+    "sacrebleu>=2.4.0",
+    "matplotlib>=3.8.0",
+    "tqdm>=4.66.0",
+    "transformers>=4.40.0",
+    "numpy>=1.26.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
