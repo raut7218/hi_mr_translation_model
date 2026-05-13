@@ -224,6 +224,9 @@ mlruns/
 *.pt
 *.pth
 
+
 # SentencePiece
 *.model
 *.vocab
+
+data/
