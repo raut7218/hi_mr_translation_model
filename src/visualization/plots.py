@@ -13,7 +13,7 @@ import os
 from typing import Any
 
 import matplotlib
-matplotlib.use("Agg")  # Non-interactive backend for cluster
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 

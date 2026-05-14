@@ -148,18 +148,18 @@ def get_dataloaders(
             train_ds,
             batch_size=config.training.batch_size,
             shuffle=True,
-            num_workers=config.training.num_workers,
+            num_workers=0,
             collate_fn=_collate,
-            pin_memory=True,
+            pin_memory=False,
             drop_last=True,
         ),
         "val": DataLoader(
             val_ds,
             batch_size=config.training.batch_size,
             shuffle=False,
-            num_workers=config.training.num_workers,
+            num_workers=0,
             collate_fn=_collate,
-            pin_memory=True,
+            pin_memory=False,
         ),
     }
 
@@ -176,9 +176,9 @@ def get_dataloaders(
             test_ds,
             batch_size=config.training.batch_size,
             shuffle=False,
-            num_workers=config.training.num_workers,
+            num_workers=0,
             collate_fn=_collate,
-            pin_memory=True,
+            pin_memory=False,
         )
 
     return loaders

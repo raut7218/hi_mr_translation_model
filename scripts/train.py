@@ -8,11 +8,11 @@ Steps:
   1. Load config, tokenizer, and processed data
   2. Build model
   3. Create DataLoaders
-  4. Train with MLflow tracking
+    4. Train on CPU with optional MLflow tracking
   5. Save checkpoints and plots
 
 The script bootstraps preprocessing and tokenizer training when the expected
-artifacts are missing so it can run from a fresh Colab clone with one command.
+artifacts are missing so it can run from a fresh local clone with one command.
 """
 
 import sys

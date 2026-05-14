@@ -19,21 +19,15 @@ def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
     # Deterministic mode (slight perf hit, better reproducibility)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
 
 def get_device() -> torch.device:
-    """Get the best available device."""
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
-        print(f"  Memory: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB")
-    else:
-        device = torch.device("cpu")
-        print("Using CPU")
+    """Get the device used by this project."""
+    device = torch.device("cpu")
+    print("Using CPU")
     return device
 
 
@@ -65,7 +59,6 @@ def get_scheduler(
         mode="min",
         factor=0.5,
         patience=3,
-        verbose=True,
     )
 
 

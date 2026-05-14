@@ -111,9 +111,6 @@ class NMTConfig:
 
 
 # ---------------------------------------------------------------------------
-# Loader
-# ---------------------------------------------------------------------------
-
 _SECTION_MAP = {
     "data": DataConfig,
     "tokenizer": TokenizerConfig,
@@ -123,15 +120,6 @@ _SECTION_MAP = {
     "mlflow": MLflowConfig,
     "plotting": PlottingConfig,
 }
-
-
-def _is_colab_environment() -> bool:
-    """Detect Google Colab without importing Colab-specific modules."""
-    return bool(
-        os.environ.get("COLAB_RELEASE_TAG")
-        or os.environ.get("COLAB_GPU")
-        or os.environ.get("COLAB_TPU_ADDR")
-    )
 
 
 def load_config(path: str | Path) -> NMTConfig:
@@ -162,8 +150,7 @@ def parse_args() -> NMTConfig:
     parser.add_argument(
         "--config", type=str, default=None,
         help=(
-            "Path to YAML config file. Defaults to configs/colab.yaml in Colab "
-            "and configs/default.yaml elsewhere."
+            "Path to YAML config file. Defaults to configs/default.yaml."
         ),
     )
     parser.add_argument(
@@ -173,7 +160,7 @@ def parse_args() -> NMTConfig:
     args, _ = parser.parse_known_args()
     config_path = args.config
     if config_path is None:
-        config_path = "configs/colab.yaml" if _is_colab_environment() else "configs/default.yaml"
+        config_path = "configs/default.yaml"
 
     config = load_config(config_path)
 
