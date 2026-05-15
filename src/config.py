@@ -27,6 +27,7 @@ class DataConfig:
     test_hi: str = "data/test.hi"
     test_mr: str = "data/test.mr"
     val_split: float = 0.05
+    max_train_examples: int = 10000
     max_seq_len: int = 128
     min_seq_len: int = 2
     processed_dir: str = "outputs/processed"

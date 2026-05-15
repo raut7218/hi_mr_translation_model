@@ -10,6 +10,7 @@ data:
   test_hi: data/test.hi
   test_mr: data/test.mr
   val_split: 0.05                # fraction of train used for validation
+  max_train_examples: 10000      # keep only the first 10k sorted training pairs
   max_seq_len: 96                # max tokens per sentence (after BPE)
   min_seq_len: 2                 # min tokens per sentence
   processed_dir: outputs/processed
@@ -45,13 +46,13 @@ training:
   batch_size: 16
   num_epochs: 12
   learning_rate: 0.001
-  optimizer: adam                 # adam or adamw
-  weight_decay: 0.0
+  optimizer: adamw                # adam or adamw
+  weight_decay: 0.01
   grad_clip: 5.0
   label_smoothing: 0.1
   teacher_forcing_ratio: 1.0
   teacher_forcing_decay: 0.03    # reduce TF ratio by this per epoch
-  num_workers: 0
+  num_workers: 2                 # small amount of parallel loading for CPU training
   seed: 42
   checkpoint_dir: outputs/checkpoints
   save_every_n_epochs: 4

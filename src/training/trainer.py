@@ -56,7 +56,11 @@ class Trainer:
 
         # Optimizer & scheduler
         self.optimizer = get_optimizer(model, config.training)
-        self.scheduler = get_scheduler(self.optimizer, config.training)
+        self.scheduler = get_scheduler(
+            self.optimizer,
+            config.training,
+            steps_per_epoch=max(1, len(train_loader)),
+        )
 
         # Loss function: cross-entropy with label smoothing, ignoring PAD
         self.criterion = nn.CrossEntropyLoss(
@@ -119,9 +123,6 @@ class Trainer:
                     self.history["val_chrf"].append(val_metrics["chrf_100"])
 
                     # LR scheduling
-                    if self.scheduler is not None:
-                        self.scheduler.step(val_loss)
-
                     # Log to MLflow
                     if mlflow_enabled:
                         mlflow.log_metrics(
@@ -221,6 +222,9 @@ class Trainer:
                 self.model.parameters(), self.config.training.grad_clip,
             )
             self.optimizer.step()
+
+            if self.scheduler is not None:
+                self.scheduler.step()
 
             total_loss += loss.item()
             num_batches += 1

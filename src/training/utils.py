@@ -27,7 +27,11 @@ def set_seed(seed: int) -> None:
 def get_device() -> torch.device:
     """Get the device used by this project."""
     device = torch.device("cpu")
-    print("Using CPU")
+    cpu_count = os.cpu_count() or 1
+    target_threads = max(1, int(cpu_count * 0.8))
+    torch.set_num_threads(target_threads)
+    torch.set_num_interop_threads(1)
+    print(f"Using CPU with {target_threads} torch threads")
     return device
 
 
@@ -52,13 +56,19 @@ def get_optimizer(model: nn.Module, config: TrainingConfig) -> torch.optim.Optim
 def get_scheduler(
     optimizer: torch.optim.Optimizer,
     config: TrainingConfig,
+    steps_per_epoch: int,
 ) -> torch.optim.lr_scheduler._LRScheduler | None:
-    """Build a simple LR scheduler (ReduceLROnPlateau)."""
-    return torch.optim.lr_scheduler.ReduceLROnPlateau(
+    """Build a OneCycleLR scheduler for faster, smoother convergence."""
+    total_steps = max(1, steps_per_epoch * config.num_epochs)
+    return torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
-        mode="min",
-        factor=0.5,
-        patience=3,
+        max_lr=config.learning_rate,
+        total_steps=total_steps,
+        pct_start=0.1,
+        anneal_strategy="cos",
+        div_factor=10.0,
+        final_div_factor=100.0,
+        cycle_momentum=False,
     )
 
 
