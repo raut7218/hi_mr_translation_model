@@ -131,13 +131,43 @@ _SECTION_MAP = {
 }
 
 
+def _guess_project_root(config_path: Path) -> Path:
+    config_dir = config_path.parent
+    if config_dir.name == "configs":
+        return config_dir.parent
+    return config_dir
+
+
+def _resolve_rel_path(value: str, base_dir: Path) -> str:
+    if not value:
+        return value
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    return str((base_dir / path).resolve())
+
+
+def _resolve_config_paths(config: NMTConfig, base_dir: Path) -> None:
+    config.data.train_hi = _resolve_rel_path(config.data.train_hi, base_dir)
+    config.data.train_mr = _resolve_rel_path(config.data.train_mr, base_dir)
+    config.data.test_hi = _resolve_rel_path(config.data.test_hi, base_dir)
+    config.data.test_mr = _resolve_rel_path(config.data.test_mr, base_dir)
+    config.data.processed_dir = _resolve_rel_path(config.data.processed_dir, base_dir)
+    config.tokenizer.model_prefix = _resolve_rel_path(config.tokenizer.model_prefix, base_dir)
+    config.training.checkpoint_dir = _resolve_rel_path(config.training.checkpoint_dir, base_dir)
+    config.plotting.output_dir = _resolve_rel_path(config.plotting.output_dir, base_dir)
+    config.mlflow.tracking_uri = _resolve_rel_path(config.mlflow.tracking_uri, base_dir)
+
+
 def load_config(path: str | Path) -> NMTConfig:
     """Load a YAML config file and return an NMTConfig instance."""
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
+    config_path = Path(path).expanduser()
+    if not config_path.is_absolute():
+        config_path = (Path.cwd() / config_path).resolve()
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with open(path, "r", encoding="utf-8") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         raw: dict[str, Any] = yaml.safe_load(f)
 
     kwargs: dict[str, Any] = {}
@@ -146,7 +176,11 @@ def load_config(path: str | Path) -> NMTConfig:
         if section_data:
             kwargs[section_name] = dc_cls(**section_data)
 
-    return NMTConfig(**kwargs)
+    config = NMTConfig(**kwargs)
+    project_root = _guess_project_root(config_path)
+    _resolve_config_paths(config, project_root)
+    config._project_root = str(project_root)  # type: ignore[attr-defined]
+    return config
 
 
 def parse_args() -> NMTConfig:
@@ -174,7 +208,15 @@ def parse_args() -> NMTConfig:
     config = load_config(config_path)
 
     # Attach checkpoint path as a runtime attribute
-    config._checkpoint = getattr(args, "checkpoint", None)  # type: ignore[attr-defined]
+    checkpoint = getattr(args, "checkpoint", None)
+    if checkpoint:
+        ckpt_path = Path(checkpoint).expanduser()
+        if not ckpt_path.is_absolute():
+            project_root = Path(getattr(config, "_project_root", Path.cwd()))
+            ckpt_path = (project_root / ckpt_path).resolve()
+        config._checkpoint = str(ckpt_path)  # type: ignore[attr-defined]
+    else:
+        config._checkpoint = None  # type: ignore[attr-defined]
     return config
 
 
