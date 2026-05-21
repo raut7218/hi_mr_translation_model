@@ -2,8 +2,8 @@
 Interactive / file-based translation CLI.
 
 Usage:
-    python -m src.evaluation.translate --config configs/default.yaml --checkpoint outputs/checkpoints/best.pt
-    python -m src.evaluation.translate --config configs/default.yaml --checkpoint outputs/checkpoints/best.pt --input file.txt
+    python -m src.evaluation.translate --config configs/colab_random.yaml --checkpoint outputs/colab_random/checkpoints/best.pt
+    python -m src.evaluation.translate --config configs/colab_random.yaml --checkpoint outputs/colab_random/checkpoints/best.pt --input file.txt
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from src.training.utils import get_device, load_checkpoint
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Translate Hindi → Marathi")
-    parser.add_argument("--config", type=str, default="configs/default.yaml")
+    parser.add_argument("--config", type=str, default="configs/colab_random.yaml")
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--input", type=str, default=None, help="Input file (one sentence per line)")
     parser.add_argument("--strategy", type=str, default=None, help="greedy or beam")

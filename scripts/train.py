@@ -2,13 +2,13 @@
 Training entry point.
 
 Usage:
-    python scripts/train.py --config configs/default.yaml
+    python scripts/train.py --config configs/colab_random.yaml
 
 Steps:
   1. Load config, tokenizer, and processed data
   2. Build model
   3. Create DataLoaders
-  4. Train on CPU/GPU with optional AMP and MLflow tracking
+    4. Train on GPU with optional AMP and MLflow tracking
   5. Save checkpoints and plots
 
 The script bootstraps preprocessing and tokenizer training when the expected

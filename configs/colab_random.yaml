@@ -8,7 +8,7 @@ data:
   test_hi: data/test.hi
   test_mr: data/test.mr
   val_split: 0.05
-  max_train_examples: 100000
+  max_train_examples: null
   max_seq_len: 96
   min_seq_len: 2
   processed_dir: outputs/colab_random/processed
@@ -46,12 +46,12 @@ training:
   label_smoothing: 0.1
   teacher_forcing_ratio: 1.0
   teacher_forcing_decay: 0.02
-  num_workers: 2
+  num_workers: 4
   seed: 42
   checkpoint_dir: outputs/colab_random/checkpoints
   save_every_n_epochs: 3
   eval_every_n_epochs: 1
-  device: auto
+  device: cuda
   mixed_precision: true
   cudnn_benchmark: true
   deterministic: false

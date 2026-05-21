@@ -162,11 +162,13 @@ def run_preprocessing(config: NMTConfig) -> dict[str, list[str]]:
         val_ratio=config.data.val_split,
         seed=config.training.seed,
     )
-    max_train_examples = max(0, int(getattr(config.data, "max_train_examples", 0)))
-    if max_train_examples:
-        train_hi = train_hi[:max_train_examples]
-        train_mr = train_mr[:max_train_examples]
-        print(f"  Training subset limited to first {len(train_hi)} training pairs")
+    max_train_examples = getattr(config.data, "max_train_examples", None)
+    if max_train_examples is not None:
+        max_train_examples = int(max_train_examples)
+        if max_train_examples > 0:
+            train_hi = train_hi[:max_train_examples]
+            train_mr = train_mr[:max_train_examples]
+            print(f"  Training subset limited to first {len(train_hi)} training pairs")
     print(f"  Train: {len(train_hi)} pairs")
     print(f"  Val:   {len(val_hi)} pairs")
 

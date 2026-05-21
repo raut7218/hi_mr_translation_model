@@ -2,7 +2,7 @@
 Evaluation entry point.
 
 Usage:
-    python scripts/evaluate.py --config configs/default.yaml --checkpoint outputs/checkpoints/best.pt
+    python scripts/evaluate.py --config configs/colab_random.yaml --checkpoint outputs/colab_random/checkpoints/best.pt
 
 Steps:
   1. Load config, tokenizer, and test data

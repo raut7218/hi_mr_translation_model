@@ -2,7 +2,7 @@
 Preprocessing entry point.
 
 Usage:
-    python scripts/preprocess.py --config configs/default.yaml
+    python scripts/preprocess.py --config configs/colab_random.yaml
 
 Steps:
   1. Clean and filter raw parallel data

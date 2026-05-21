@@ -11,7 +11,7 @@ import argparse
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 
@@ -27,7 +27,7 @@ class DataConfig:
     test_hi: str = "data/test.hi"
     test_mr: str = "data/test.mr"
     val_split: float = 0.05
-    max_train_examples: int = 10000
+    max_train_examples: Optional[int] = None
     max_seq_len: int = 128
     min_seq_len: int = 2
     processed_dir: str = "outputs/processed"
@@ -187,13 +187,13 @@ def parse_args() -> NMTConfig:
     """Parse CLI arguments and return config.
 
     Usage:
-        python scripts/train.py --config configs/default.yaml
+        python scripts/train.py --config configs/colab_random.yaml
     """
     parser = argparse.ArgumentParser(description="Hindi-Marathi NMT")
     parser.add_argument(
         "--config", type=str, default=None,
         help=(
-            "Path to YAML config file. Defaults to configs/default.yaml."
+            "Path to YAML config file. Defaults to configs/colab_random.yaml."
         ),
     )
     parser.add_argument(
@@ -203,7 +203,7 @@ def parse_args() -> NMTConfig:
     args, _ = parser.parse_known_args()
     config_path = args.config
     if config_path is None:
-        config_path = "configs/default.yaml"
+        config_path = "configs/colab_random.yaml"
 
     config = load_config(config_path)
 
