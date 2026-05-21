@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import unicodedata
 from pathlib import Path
 
@@ -26,6 +27,10 @@ def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFC", text)
     # Collapse multiple spaces into one, strip leading/trailing
     text = " ".join(text.split())
+    # Detokenize common punctuation spacing (e.g. "word ." -> "word.")
+    text = re.sub(r"\s+([.,!?;:])", r"\1", text)
+    text = re.sub(r"\s+([)\]\}])", r"\1", text)
+    text = re.sub(r"([\(\[\{])\s+", r"\1", text)
     return text
 
 
@@ -86,22 +91,17 @@ def train_val_split(
     assert len(hi_lines) == len(mr_lines), "Parallel data must have same length"
 
     indices = list(range(len(hi_lines)))
-    random.seed(seed)
-    random.shuffle(indices)
+    rng = random.Random(seed)
+    rng.shuffle(indices)
 
     val_size = int(len(indices) * val_ratio)
-    val_indices = set(indices[:val_size])
+    val_indices = indices[:val_size]
+    train_indices = indices[val_size:]
 
-    train_hi, train_mr = [], []
-    val_hi, val_mr = [], []
-
-    for i in range(len(hi_lines)):
-        if i in val_indices:
-            val_hi.append(hi_lines[i])
-            val_mr.append(mr_lines[i])
-        else:
-            train_hi.append(hi_lines[i])
-            train_mr.append(mr_lines[i])
+    train_hi = [hi_lines[i] for i in train_indices]
+    train_mr = [mr_lines[i] for i in train_indices]
+    val_hi = [hi_lines[i] for i in val_indices]
+    val_mr = [mr_lines[i] for i in val_indices]
 
     return train_hi, train_mr, val_hi, val_mr
 
