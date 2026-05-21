@@ -29,7 +29,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    device = get_device()
+    device = get_device(config.training.device)
 
     # Load tokenizer
     tokenizer = build_tokenizer(config.tokenizer)

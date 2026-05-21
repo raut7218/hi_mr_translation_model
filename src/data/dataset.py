@@ -201,6 +201,8 @@ def get_dataloaders(
 
     _collate = partial(collate_fn, pad_id=pad_id)
     num_workers = max(0, int(config.training.num_workers))
+    pin_memory = bool(config.training.pin_memory)
+    persistent_workers = bool(config.training.persistent_workers and num_workers > 0)
     train_batch_sampler = BucketBatchSampler(
         train_lengths,
         batch_size=config.training.batch_size,
@@ -216,7 +218,8 @@ def get_dataloaders(
             batch_sampler=train_batch_sampler,
             num_workers=num_workers,
             collate_fn=_collate,
-            pin_memory=False,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
         ),
         "val": DataLoader(
             val_ds,
@@ -224,7 +227,8 @@ def get_dataloaders(
             shuffle=False,
             num_workers=num_workers,
             collate_fn=_collate,
-            pin_memory=False,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
         ),
     }
 
@@ -243,7 +247,8 @@ def get_dataloaders(
             shuffle=False,
             num_workers=num_workers,
             collate_fn=_collate,
-            pin_memory=False,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
         )
 
     return loaders

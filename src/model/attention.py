@@ -38,6 +38,7 @@ class BahdanauAttention(nn.Module):
         decoder_hidden: torch.Tensor,
         encoder_outputs: torch.Tensor,
         src_mask: torch.Tensor | None = None,
+        projected_encoder_outputs: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -52,7 +53,11 @@ class BahdanauAttention(nn.Module):
         # decoder_hidden: (batch, decoder_dim) → (batch, 1, attention_dim)
         query = self.W_s(decoder_hidden).unsqueeze(1)
         # encoder_outputs: (batch, src_len, encoder_dim) → (batch, src_len, attention_dim)
-        keys = self.W_h(encoder_outputs)
+        keys = (
+            projected_encoder_outputs
+            if projected_encoder_outputs is not None
+            else self.W_h(encoder_outputs)
+        )
 
         # (batch, src_len, attention_dim) → (batch, src_len, 1) → (batch, src_len)
         energy = self.V(torch.tanh(query + keys)).squeeze(-1)
@@ -67,3 +72,7 @@ class BahdanauAttention(nn.Module):
         context = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs).squeeze(1)
 
         return context, attn_weights
+
+    def project_encoder(self, encoder_outputs: torch.Tensor) -> torch.Tensor:
+        """Precompute encoder-side attention keys once per source batch."""
+        return self.W_h(encoder_outputs)

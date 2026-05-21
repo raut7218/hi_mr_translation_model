@@ -128,6 +128,11 @@ class SharedTokenizer:
         assert self.sp is not None
         return self.sp.get_piece_size()
 
+    def id_to_piece(self, idx: int) -> str:
+        """Return the SentencePiece token string for a vocabulary ID."""
+        assert self.sp is not None
+        return self.sp.id_to_piece(idx)
+
     @property
     def pad_id(self) -> int:
         assert self.sp is not None

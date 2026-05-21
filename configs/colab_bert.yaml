@@ -1,0 +1,75 @@
+# =============================================================================
+# Hindi-Marathi NMT - Google Colab T4 BERT-Initialized Embedding Experiment
+# =============================================================================
+
+data:
+  train_hi: data/train.hi
+  train_mr: data/train.mr
+  test_hi: data/test.hi
+  test_mr: data/test.mr
+  val_split: 0.05
+  max_train_examples: 100000
+  max_seq_len: 96
+  min_seq_len: 2
+  processed_dir: outputs/colab_bert/processed
+
+tokenizer:
+  type: bpe
+  vocab_size: 16000
+  model_prefix: outputs/colab_bert/tokenizer/shared_bpe
+  character_coverage: 1.0
+  pad_id: 0
+  unk_id: 1
+  bos_id: 2
+  eos_id: 3
+
+model:
+  embedding_dim: 768
+  hidden_dim: 512
+  num_layers: 2
+  dropout: 0.3
+  attention_type: bahdanau
+  bidirectional_encoder: true
+  embedding_type: bert
+  tie_embeddings: false
+  bert_hi_model: l3cube-pune/hindi-bert-v2
+  bert_mr_model: l3cube-pune/marathi-bert-v2
+  freeze_bert_embeddings: false
+
+training:
+  batch_size: 48
+  num_epochs: 18
+  learning_rate: 0.0007
+  optimizer: adamw
+  weight_decay: 0.01
+  grad_clip: 5.0
+  label_smoothing: 0.1
+  teacher_forcing_ratio: 1.0
+  teacher_forcing_decay: 0.02
+  num_workers: 2
+  seed: 42
+  checkpoint_dir: outputs/colab_bert/checkpoints
+  save_every_n_epochs: 3
+  eval_every_n_epochs: 1
+  device: auto
+  mixed_precision: true
+  cudnn_benchmark: true
+  deterministic: false
+  pin_memory: true
+  persistent_workers: true
+  train_metric_batches: 10
+  val_metric_batches: 20
+
+decoding:
+  strategy: greedy
+  beam_size: 5
+  max_decode_len: 120
+  length_penalty: 0.6
+
+mlflow:
+  enabled: false
+  experiment_name: hi_mr_nmt_part1_bert
+  tracking_uri: outputs/colab_bert/mlruns
+
+plotting:
+  output_dir: outputs/colab_bert/plots

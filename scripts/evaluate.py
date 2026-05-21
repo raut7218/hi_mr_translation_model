@@ -35,7 +35,7 @@ def main() -> None:
     config = parse_args()
     ensure_dirs(config)
 
-    device = get_device()
+    device = get_device(config.training.device)
 
     # Load tokenizer
     tokenizer = build_tokenizer(config.tokenizer)

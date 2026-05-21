@@ -57,6 +57,14 @@ training:
   checkpoint_dir: outputs/checkpoints
   save_every_n_epochs: 4
   eval_every_n_epochs: 2
+  device: cpu
+  mixed_precision: false
+  cudnn_benchmark: false
+  deterministic: true
+  pin_memory: false
+  persistent_workers: true
+  train_metric_batches: 5
+  val_metric_batches: 20
 
 # --- Decoding ---
 decoding:

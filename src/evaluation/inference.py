@@ -38,6 +38,9 @@ def greedy_decode(
     # Encode
     encoder_outputs, (hidden, cell) = model.encoder(src, src_lengths)
     src_mask = model.create_src_mask(src)
+    projected_encoder_outputs = model.decoder.attention.project_encoder(
+        encoder_outputs,
+    )
 
     # Start with BOS
     current_token = torch.full(
@@ -50,7 +53,12 @@ def greedy_decode(
 
     for _ in range(max_len):
         logits, hidden, cell, _ = model.decoder.forward_step(
-            current_token, hidden, cell, encoder_outputs, src_mask,
+            current_token,
+            hidden,
+            cell,
+            encoder_outputs,
+            src_mask,
+            projected_encoder_outputs=projected_encoder_outputs,
         )
         # Greedy: pick the most likely token
         current_token = logits.argmax(dim=-1)  # (batch,)
@@ -100,9 +108,13 @@ def beam_search_decode(
     # Encode
     encoder_outputs, (hidden, cell) = model.encoder(src, src_lengths)
     src_mask = model.create_src_mask(src)
+    projected_encoder_outputs = model.decoder.attention.project_encoder(
+        encoder_outputs,
+    )
 
     # Expand for beam search: (1, ...) → (beam_size, ...)
     encoder_outputs = encoder_outputs.repeat(beam_size, 1, 1)
+    projected_encoder_outputs = projected_encoder_outputs.repeat(beam_size, 1, 1)
     src_mask = src_mask.repeat(beam_size, 1)
     hidden = hidden.repeat(1, beam_size, 1)
     cell = cell.repeat(1, beam_size, 1)
@@ -120,7 +132,12 @@ def beam_search_decode(
 
     for step in range(max_len):
         logits, hidden, cell, _ = model.decoder.forward_step(
-            current_token, hidden, cell, encoder_outputs, src_mask,
+            current_token,
+            hidden,
+            cell,
+            encoder_outputs,
+            src_mask,
+            projected_encoder_outputs=projected_encoder_outputs,
         )
         log_probs = F.log_softmax(logits, dim=-1)  # (beam_size, vocab_size)
 

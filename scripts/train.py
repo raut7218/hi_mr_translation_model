@@ -8,7 +8,7 @@ Steps:
   1. Load config, tokenizer, and processed data
   2. Build model
   3. Create DataLoaders
-    4. Train on CPU with optional MLflow tracking
+  4. Train on CPU/GPU with optional AMP and MLflow tracking
   5. Save checkpoints and plots
 
 The script bootstraps preprocessing and tokenizer training when the expected
@@ -21,6 +21,8 @@ from pathlib import Path
 
 # Allow running from project root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import torch
 
 from src.config import parse_args, ensure_dirs
 from src.data.dataset import get_dataloaders
@@ -73,10 +75,11 @@ def main() -> None:
     ensure_dirs(config)
 
     # Reproducibility
-    set_seed(config.training.seed)
-
     # Device
-    device = get_device()
+    set_seed(config.training.seed, deterministic=config.training.deterministic)
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = config.training.cudnn_benchmark
+    device = get_device(config.training.device)
 
     # Load tokenizer (must already be trained via preprocess.py)
     print("\n" + "=" * 60)

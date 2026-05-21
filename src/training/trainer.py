@@ -13,14 +13,20 @@ from __future__ import annotations
 
 import os
 import time
+import csv
+import json
 from contextlib import nullcontext
 from typing import Any
 
-import mlflow
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+try:
+    import mlflow
+except ImportError:
+    mlflow = None
 
 from src.config import NMTConfig
 from src.data.tokenizer import SharedTokenizer
@@ -53,6 +59,13 @@ class Trainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
+        self.use_amp = bool(
+            config.training.mixed_precision and device.type == "cuda"
+        )
+        try:
+            self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+        except (AttributeError, TypeError):
+            self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
 
         # Optimizer & scheduler
         self.optimizer = get_optimizer(model, config.training)
@@ -79,6 +92,11 @@ class Trainer:
             "val_chrf": [],
         }
 
+        if self.use_amp:
+            print("Mixed precision: enabled (FP16 AMP)")
+        else:
+            print("Mixed precision: disabled")
+
     # ------------------------------------------------------------------
     # Main training loop
     # ------------------------------------------------------------------
@@ -94,6 +112,11 @@ class Trainer:
 
         mlflow_ctx = nullcontext()
         if mlflow_enabled:
+            if mlflow is None:
+                raise ImportError(
+                    "MLflow tracking is enabled, but mlflow is not installed. "
+                    "Install requirements.txt or set mlflow.enabled=false."
+                )
             # Setup MLflow only when explicitly enabled.
             mlflow.set_tracking_uri(self.config.mlflow.tracking_uri)
             mlflow.set_experiment(self.config.mlflow.experiment_name)
@@ -117,9 +140,18 @@ class Trainer:
 
                 # --- Validate ---
                 if epoch % cfg.eval_every_n_epochs == 0:
-                    val_loss, val_metrics = self._validate_epoch(epoch)
+                    train_metrics = self._compute_translation_metrics(
+                        self.train_loader,
+                        max_eval_batches=cfg.train_metric_batches,
+                    )
+                    val_loss, val_metrics = self._validate_epoch(
+                        epoch,
+                        max_eval_batches=cfg.val_metric_batches,
+                    )
                     self.history["val_loss"].append(val_loss)
+                    self.history["train_bleu"].append(train_metrics["bleu_100"])
                     self.history["val_bleu"].append(val_metrics["bleu_100"])
+                    self.history["train_chrf"].append(train_metrics["chrf_100"])
                     self.history["val_chrf"].append(val_metrics["chrf_100"])
 
                     # LR scheduling
@@ -129,7 +161,9 @@ class Trainer:
                             {
                                 "train_loss": train_loss,
                                 "val_loss": val_loss,
+                                "train_bleu_100": train_metrics["bleu_100"],
                                 "val_bleu_100": val_metrics["bleu_100"],
+                                "train_chrf_100": train_metrics["chrf_100"],
                                 "val_chrf_100": val_metrics["chrf_100"],
                                 "teacher_forcing_ratio": tf_ratio,
                                 "learning_rate": self.optimizer.param_groups[0]["lr"],
@@ -150,8 +184,10 @@ class Trainer:
                         f"  Epoch {epoch}/{cfg.num_epochs} | "
                         f"Train Loss: {train_loss:.4f} | "
                         f"Val Loss: {val_loss:.4f} | "
-                        f"BLEU: {val_metrics['bleu_100']:.2f} | "
-                        f"CHRF++: {val_metrics['chrf_100']:.2f} | "
+                        f"Train BLEU: {train_metrics['bleu_100']:.2f} | "
+                        f"Val BLEU: {val_metrics['bleu_100']:.2f} | "
+                        f"Train CHRF++: {train_metrics['chrf_100']:.2f} | "
+                        f"Val CHRF++: {val_metrics['chrf_100']:.2f} | "
                         f"TF: {tf_ratio:.2f} | "
                         f"LR: {self.optimizer.param_groups[0]['lr']:.6f}"
                     )
@@ -171,8 +207,11 @@ class Trainer:
             plot_paths = plot_training_curves(
                 self.history, self.config.plotting.output_dir,
             )
+            history_paths = self._save_history()
             if mlflow_enabled:
                 for path in plot_paths:
+                    mlflow.log_artifact(path)
+                for path in history_paths:
                     mlflow.log_artifact(path)
 
         return self.history
@@ -198,30 +237,32 @@ class Trainer:
         )
 
         for batch in pbar:
-            src = batch["src"].to(self.device)
-            tgt = batch["tgt"].to(self.device)
-            src_lengths = batch["src_lengths"].to(self.device)
+            src = batch["src"].to(self.device, non_blocking=True)
+            tgt = batch["tgt"].to(self.device, non_blocking=True)
+            src_lengths = batch["src_lengths"].to(self.device, non_blocking=True)
 
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
 
             # Forward pass
             # outputs: (batch, tgt_len - 1, vocab_size)
-            outputs = self.model(src, tgt, src_lengths, tf_ratio)
+            with self._autocast():
+                outputs = self.model(src, tgt, src_lengths, tf_ratio)
 
-            # Compute loss
-            # Reshape: (batch * (tgt_len - 1), vocab_size) vs (batch * (tgt_len - 1),)
-            output_dim = outputs.shape[-1]
-            outputs_flat = outputs.contiguous().view(-1, output_dim)
-            targets_flat = tgt[:, 1:].contiguous().view(-1)  # Skip BOS
-
-            loss = self.criterion(outputs_flat, targets_flat)
+                # Compute loss
+                # Reshape: (batch * (tgt_len - 1), vocab_size) vs (batch * (tgt_len - 1),)
+                output_dim = outputs.shape[-1]
+                outputs_flat = outputs.contiguous().view(-1, output_dim)
+                targets_flat = tgt[:, 1:].contiguous().view(-1)  # Skip BOS
+                loss = self.criterion(outputs_flat, targets_flat)
 
             # Backward pass
-            loss.backward()
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.config.training.grad_clip,
             )
-            self.optimizer.step()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
             if self.scheduler is not None:
                 self.scheduler.step()
@@ -257,27 +298,29 @@ class Trainer:
         all_references: list[str] = []
 
         for i, batch in enumerate(self.val_loader):
-            src = batch["src"].to(self.device)
-            tgt = batch["tgt"].to(self.device)
-            src_lengths = batch["src_lengths"].to(self.device)
+            src = batch["src"].to(self.device, non_blocking=True)
+            tgt = batch["tgt"].to(self.device, non_blocking=True)
+            src_lengths = batch["src_lengths"].to(self.device, non_blocking=True)
 
             # Loss computation (with teacher forcing = 1.0 for consistent loss)
-            outputs = self.model(src, tgt, src_lengths, teacher_forcing_ratio=1.0)
-            output_dim = outputs.shape[-1]
-            outputs_flat = outputs.contiguous().view(-1, output_dim)
-            targets_flat = tgt[:, 1:].contiguous().view(-1)
-            loss = self.criterion(outputs_flat, targets_flat)
+            with self._autocast():
+                outputs = self.model(src, tgt, src_lengths, teacher_forcing_ratio=1.0)
+                output_dim = outputs.shape[-1]
+                outputs_flat = outputs.contiguous().view(-1, output_dim)
+                targets_flat = tgt[:, 1:].contiguous().view(-1)
+                loss = self.criterion(outputs_flat, targets_flat)
 
             total_loss += loss.item()
             num_batches += 1
 
             # Translation metrics (on a subset to save time)
             if i < max_eval_batches:
-                translations = translate_batch(
-                    self.model, src, src_lengths, self.tokenizer,
-                    strategy="greedy",
-                    max_len=self.config.decoding.max_decode_len,
-                )
+                with self._autocast():
+                    translations = translate_batch(
+                        self.model, src, src_lengths, self.tokenizer,
+                        strategy="greedy",
+                        max_len=self.config.decoding.max_decode_len,
+                    )
                 references = [
                     self.tokenizer.decode(tgt[j].tolist())
                     for j in range(tgt.size(0))
@@ -294,6 +337,44 @@ class Trainer:
             metrics = {"bleu_100": 0.0, "chrf_100": 0.0}
 
         return val_loss, metrics
+
+    @torch.no_grad()
+    def _compute_translation_metrics(
+        self,
+        loader: DataLoader,
+        max_eval_batches: int,
+    ) -> dict[str, float]:
+        """Compute sampled BLEU/CHRF++ for a loader."""
+        if max_eval_batches <= 0:
+            return {"bleu_100": 0.0, "chrf_100": 0.0}
+
+        self.model.eval()
+        all_hypotheses: list[str] = []
+        all_references: list[str] = []
+
+        for i, batch in enumerate(loader):
+            if i >= max_eval_batches:
+                break
+            src = batch["src"].to(self.device, non_blocking=True)
+            tgt = batch["tgt"].to(self.device, non_blocking=True)
+            src_lengths = batch["src_lengths"].to(self.device, non_blocking=True)
+
+            with self._autocast():
+                translations = translate_batch(
+                    self.model, src, src_lengths, self.tokenizer,
+                    strategy="greedy",
+                    max_len=self.config.decoding.max_decode_len,
+                )
+            references = [
+                self.tokenizer.decode(tgt[j].tolist())
+                for j in range(tgt.size(0))
+            ]
+            all_hypotheses.extend(translations)
+            all_references.extend(references)
+
+        if not all_hypotheses:
+            return {"bleu_100": 0.0, "chrf_100": 0.0}
+        return compute_all_metrics(all_hypotheses, all_references)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -325,3 +406,37 @@ class Trainer:
             "decoding.strategy": cfg.decoding.strategy,
         }
         mlflow.log_params(params)
+
+    def _autocast(self):
+        """Return the right autocast context for the active device."""
+        if not self.use_amp:
+            return nullcontext()
+        return torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+
+    def _save_history(self) -> list[str]:
+        """Persist metric history for reports and reproducibility."""
+        output_dir = self.config.plotting.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        json_path = os.path.join(output_dir, "training_history.json")
+        csv_path = os.path.join(output_dir, "training_history.csv")
+
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(self.history, f, indent=2, ensure_ascii=False)
+
+        max_len = max((len(values) for values in self.history.values()), default=0)
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            keys = list(self.history.keys())
+            writer.writerow(["index", *keys])
+            for i in range(max_len):
+                writer.writerow([
+                    i + 1,
+                    *[
+                        self.history[key][i] if i < len(self.history[key]) else ""
+                        for key in keys
+                    ],
+                ])
+
+        print(f"  History saved: {json_path}")
+        print(f"  History saved: {csv_path}")
+        return [json_path, csv_path]

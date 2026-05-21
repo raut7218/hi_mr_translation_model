@@ -81,6 +81,7 @@ class LSTMDecoder(nn.Module):
         cell: torch.Tensor,
         encoder_outputs: torch.Tensor,
         src_mask: torch.Tensor | None = None,
+        projected_encoder_outputs: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Single decoding step.
 
@@ -102,7 +103,12 @@ class LSTMDecoder(nn.Module):
 
         # Attention: use top-layer hidden state as query
         # hidden[-1]: (batch, hidden_dim)
-        context, attn_weights = self.attention(hidden[-1], encoder_outputs, src_mask)
+        context, attn_weights = self.attention(
+            hidden[-1],
+            encoder_outputs,
+            src_mask,
+            projected_encoder_outputs=projected_encoder_outputs,
+        )
 
         # LSTM input: [embedding; context] → (batch, 1, embedding_dim + encoder_dim)
         lstm_input = torch.cat([embedded, context], dim=-1).unsqueeze(1)

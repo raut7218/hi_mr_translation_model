@@ -2,11 +2,11 @@
 
 LSTM Seq2Seq + Bahdanau Attention model for Hindi to Marathi translation, built with PyTorch.
 
-This repository is configured for local Windows CPU training.
+This repository supports local CPU smoke runs and Google Colab T4 GPU training.
 
 ## Current Training Setup
 
-The default config is tuned for a small, fast test run on this machine:
+The default config is tuned for a small, fast CPU test run on this machine:
 
 - CPU-only execution
 - Training subset limited to the first 10,000 examples after preprocessing
@@ -21,11 +21,20 @@ The default config is tuned for a small, fast test run on this machine:
 - Gradient clipping: `5.0`
 - MLflow: disabled by default
 
+For assignment experiments, use the Colab configs:
+
+- `configs/colab_random.yaml`: LSTM Seq2Seq with randomly initialized shared BPE embeddings.
+- `configs/colab_bert.yaml`: the same LSTM Seq2Seq architecture with Hindi/Marathi BERT-initialized embedding tables.
+
+Both Colab configs use automatic CUDA selection, FP16 mixed precision on GPU, pinned-memory DataLoaders, length-bucketed batches, OneCycleLR, label smoothing, and sampled train/validation BLEU-100 and CHRF++-100 logging.
+
 ## Project Structure
 
 ```
 configs/
     default.yaml            # Local CPU profile used by default
+    colab_random.yaml       # Colab/T4 random embedding experiment
+    colab_bert.yaml         # Colab/T4 BERT-initialized embedding experiment
 src/
     config.py               # Config loader (YAML to dataclasses)
     data/
@@ -88,6 +97,38 @@ python scripts/evaluate.py --config configs/default.yaml --checkpoint outputs/ch
 
 `scripts/train.py` will bootstrap preprocessing and tokenizer training automatically if the processed files or tokenizer model are missing.
 
+## Google Colab T4 Workflow
+
+Select `Runtime > Change runtime type > T4 GPU`, then run:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Place the corpus files at:
+
+```text
+data/train.hi
+data/train.mr
+data/test.hi
+data/test.mr
+```
+
+Run the required Part I experiments:
+
+```bash
+python scripts/preprocess.py --config configs/colab_random.yaml
+python scripts/train.py --config configs/colab_random.yaml
+python scripts/evaluate.py --config configs/colab_random.yaml --checkpoint outputs/colab_random/checkpoints/best.pt
+
+python scripts/preprocess.py --config configs/colab_bert.yaml
+python scripts/train.py --config configs/colab_bert.yaml
+python scripts/evaluate.py --config configs/colab_bert.yaml --checkpoint outputs/colab_bert/checkpoints/best.pt
+```
+
+The BERT experiment downloads `l3cube-pune/hindi-bert-v2` and `l3cube-pune/marathi-bert-v2` from Hugging Face, uses them once to initialize the LSTM embedding tables, and then trains the LSTM normally. BERT is not run inside each training batch.
+
 ## Preprocessing Behavior
 
 Preprocessing keeps Hindi and Marathi sentence pairs aligned at every step.
@@ -105,6 +146,7 @@ Preprocessing keeps Hindi and Marathi sentence pairs aligned at every step.
 - Tokenizer: Shared BPE vocabulary for Hindi and Marathi
 - Attention: Additive attention with learned alignment
 - Embeddings: Tied encoder/decoder embeddings for the random-embedding path
+- BERT path: Separate Hindi encoder and Marathi decoder embedding tables initialized from the required L3Cube BERT models
 
 ## Why This Setup Is More Robust
 
@@ -133,11 +175,14 @@ Generated artifacts are written under `outputs/`:
 - `outputs/checkpoints/` for checkpoints
 - `outputs/plots/` for training curves
 - `outputs/mlruns/` for optional MLflow logs
+- `training_history.json` and `training_history.csv` beside the plots for report tables
 
 ## Notes
 
-- The project runs on CPU by default.
+- `configs/default.yaml` runs on CPU by default.
+- `configs/colab_random.yaml` and `configs/colab_bert.yaml` use `device: auto` and select CUDA on Colab.
 - The train split is capped at 10k examples for the fast local run.
+- The Colab configs cap training at 100k examples by default for a practical T4 run.
 - The test set is not reduced.
 - MLflow tracking stays off unless you enable it in the config.
 

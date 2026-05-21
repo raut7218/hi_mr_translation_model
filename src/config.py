@@ -77,6 +77,14 @@ class TrainingConfig:
     checkpoint_dir: str = "outputs/checkpoints"
     save_every_n_epochs: int = 5
     eval_every_n_epochs: int = 1
+    device: str = "auto"
+    mixed_precision: bool = True
+    cudnn_benchmark: bool = True
+    deterministic: bool = False
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    train_metric_batches: int = 10
+    val_metric_batches: int = 20
 
 
 @dataclass

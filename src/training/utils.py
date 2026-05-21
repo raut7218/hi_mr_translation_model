@@ -14,24 +14,43 @@ import torch.nn as nn
 from src.config import TrainingConfig
 
 
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, deterministic: bool = False) -> None:
     """Set random seed for reproducibility across all libraries."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    # Deterministic mode (slight perf hit, better reproducibility)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = deterministic
+    torch.backends.cudnn.benchmark = not deterministic
 
 
-def get_device() -> torch.device:
+def get_device(device_preference: str = "auto") -> torch.device:
     """Get the device used by this project."""
-    device = torch.device("cpu")
-    cpu_count = os.cpu_count() or 1
-    target_threads = max(1, int(cpu_count * 0.8))
-    torch.set_num_threads(target_threads)
-    torch.set_num_interop_threads(1)
-    print(f"Using CPU with {target_threads} torch threads")
+    preference = (device_preference or "auto").lower()
+    if preference == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    elif preference in {"cuda", "gpu"}:
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested but is not available.")
+        device = torch.device("cuda")
+    elif preference == "cpu":
+        device = torch.device("cpu")
+    else:
+        raise ValueError(f"Unknown device preference: {device_preference}")
+
+    if device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
+        name = torch.cuda.get_device_name(device)
+        print(f"Using CUDA device: {name}")
+    else:
+        cpu_count = os.cpu_count() or 1
+        target_threads = max(1, int(cpu_count * 0.8))
+        torch.set_num_threads(target_threads)
+        torch.set_num_interop_threads(1)
+        print(f"Using CPU with {target_threads} torch threads")
+
     return device
 
 
