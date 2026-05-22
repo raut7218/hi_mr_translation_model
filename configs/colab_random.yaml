@@ -46,7 +46,7 @@ training:
   label_smoothing: 0.1
   teacher_forcing_ratio: 1.0
   teacher_forcing_decay: 0.02
-  num_workers: 4
+  num_workers: 2
   seed: 42
   checkpoint_dir: outputs/colab_random/checkpoints
   save_every_n_epochs: 3
