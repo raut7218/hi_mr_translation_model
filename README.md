@@ -88,9 +88,9 @@ The BERT experiment downloads `l3cube-pune/hindi-bert-v2` and `l3cube-pune/marat
 
 ## Kaggle 2x T4 (DDP) Setup
 
-This repo now supports multi-GPU training via PyTorch DistributedDataParallel (DDP).
+This repo supports training only on 2x T4 GPUs via PyTorch DistributedDataParallel (DDP).
 
-1) Enable DDP in your config (example for random config):
+1) DDP is enabled by default in the Kaggle configs. If you edit the config, keep it enabled:
 
 ```yaml
 training:
@@ -112,6 +112,7 @@ torchrun --nproc_per_node=2 scripts/train.py --config configs/colab_random.yaml
 ```
 
 Notes:
+- This training will error if it does not detect exactly two T4 GPUs.
 - Total batch size scales with GPU count. If you hit OOM, lower `training.batch_size`.
 - Only rank 0 logs metrics, writes checkpoints, and creates plots.
 

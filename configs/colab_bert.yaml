@@ -59,7 +59,7 @@ training:
   persistent_workers: true
   train_metric_batches: 10
   val_metric_batches: 20
-  distributed_enable: false
+  distributed_enable: true
   distributed_backend: nccl
   distributed_init_method: env://
 

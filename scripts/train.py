@@ -172,31 +172,51 @@ def _run_worker(rank: int, world_size: int, config) -> None:
     cleanup_distributed()
 
 
+def _assert_two_t4_gpus() -> None:
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is required. This training supports only 2x T4 GPUs.")
+    device_count = torch.cuda.device_count()
+    if device_count != 2:
+        raise RuntimeError(
+            f"Expected exactly 2 GPUs, found {device_count}. "
+            "This training supports only 2x T4 GPUs."
+        )
+    for index in range(device_count):
+        name = torch.cuda.get_device_name(index)
+        if "T4" not in name:
+            raise RuntimeError(
+                f"GPU {index} is '{name}'. This training supports only 2x T4 GPUs."
+            )
+
+
 def main() -> None:
     config = parse_args()
 
-    if config.training.distributed_enable:
-        world_size_env = os.environ.get("WORLD_SIZE")
-        if world_size_env:
-            world_size = int(world_size_env)
-            rank = int(os.environ.get("RANK", "0"))
-            _run_worker(rank, world_size, config)
-        else:
-            if not torch.cuda.is_available():
-                raise RuntimeError("DDP requires CUDA devices.")
-            world_size = torch.cuda.device_count()
-            if world_size < 2:
-                raise RuntimeError("DDP requested but fewer than 2 GPUs found.")
-            if config.training.distributed_init_method == "env://":
-                config.training.distributed_init_method = "tcp://127.0.0.1:29500"
-            mp.spawn(
-                _run_worker,
-                args=(world_size, config),
-                nprocs=world_size,
-                join=True,
+    if not config.training.distributed_enable:
+        raise RuntimeError("DDP must be enabled. This training supports only 2x T4 GPUs.")
+
+    _assert_two_t4_gpus()
+
+    world_size_env = os.environ.get("WORLD_SIZE")
+    if world_size_env:
+        world_size = int(world_size_env)
+        if world_size != 2:
+            raise RuntimeError(
+                f"WORLD_SIZE={world_size} is not supported. "
+                "This training supports only 2x T4 GPUs."
             )
+        rank = int(os.environ.get("RANK", "0"))
+        _run_worker(rank, world_size, config)
     else:
-        _run_worker(rank=0, world_size=1, config=config)
+        world_size = 2
+        if config.training.distributed_init_method == "env://":
+            config.training.distributed_init_method = "tcp://127.0.0.1:29500"
+        mp.spawn(
+            _run_worker,
+            args=(world_size, config),
+            nprocs=world_size,
+            join=True,
+        )
 
 
 if __name__ == "__main__":
