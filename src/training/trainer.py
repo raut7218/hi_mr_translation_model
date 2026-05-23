@@ -340,7 +340,7 @@ class Trainer:
             if i < max_eval_batches:
                 with self._autocast():
                     translations = translate_batch(
-                        self.model, src, src_lengths, self.tokenizer,
+                        self._unwrap_model(), src, src_lengths, self.tokenizer,
                         strategy="greedy",
                         max_len=self.config.decoding.max_decode_len,
                     )
@@ -384,7 +384,7 @@ class Trainer:
 
             with self._autocast():
                 translations = translate_batch(
-                    self.model, src, src_lengths, self.tokenizer,
+                    self._unwrap_model(), src, src_lengths, self.tokenizer,
                     strategy="greedy",
                     max_len=self.config.decoding.max_decode_len,
                 )

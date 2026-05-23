@@ -2,16 +2,16 @@
 
 LSTM Seq2Seq + Bahdanau Attention model for Hindi to Marathi translation, built with PyTorch.
 
-This repository is tuned for Google Colab T4 GPU training and uses the full training set by default.
+This repository is configured for Kaggle only and requires exactly 2x T4 GPUs.
 
-## Current Training Setup
+## Kaggle 2x T4 Training (Required)
 
-T4-first configuration with two required experiment profiles:
+Two experiment profiles are provided:
 
 - `configs/colab_random.yaml`: LSTM Seq2Seq with randomly initialized shared BPE embeddings.
 - `configs/colab_bert.yaml`: same LSTM Seq2Seq architecture with Hindi/Marathi BERT-initialized embedding tables.
 
-Both profiles enable CUDA, FP16 mixed precision, pinned-memory DataLoaders, persistent workers, length-bucketed batching, OneCycleLR, label smoothing, and sampled train/validation BLEU-100 and CHRF++-100 logging. Training uses the full dataset (no cap on training pairs).
+Both profiles enable CUDA, FP16 AMP, pinned-memory DataLoaders, persistent workers, length-bucketed batching (single-GPU only), OneCycleLR, label smoothing, and sampled train/validation BLEU-100 and CHRF++-100 logging. Training uses the full dataset.
 
 ## Project Structure
 
@@ -54,16 +54,18 @@ outputs/                  # Generated at runtime
     mlruns/                 # Optional MLflow experiment logs
 ```
 
-## Google Colab T4 Setup
+## Kaggle 2x T4 Setup
 
-Select `Runtime > Change runtime type > T4 GPU`, then run:
+1) In Kaggle, enable a 2x T4 GPU accelerator.
+
+2) Install requirements:
 
 ```bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Place the corpus files at:
+3) Place the corpus files at:
 
 ```text
 data/train.hi
@@ -72,47 +74,23 @@ data/test.hi
 data/test.mr
 ```
 
-Run the required Part I experiments:
+4) Run preprocessing and training (DDP spawns automatically):
 
 ```bash
 python scripts/preprocess.py --config configs/colab_random.yaml
 python scripts/train.py --config configs/colab_random.yaml
+```
+
+5) Evaluate using the best checkpoint:
+
+```bash
 python scripts/evaluate.py --config configs/colab_random.yaml --checkpoint outputs/colab_random/checkpoints/best.pt
-
-python scripts/preprocess.py --config configs/colab_bert.yaml
-python scripts/train.py --config configs/colab_bert.yaml
-python scripts/evaluate.py --config configs/colab_bert.yaml --checkpoint outputs/colab_bert/checkpoints/best.pt
 ```
 
-The BERT experiment downloads `l3cube-pune/hindi-bert-v2` and `l3cube-pune/marathi-bert-v2` from Hugging Face, uses them once to initialize the LSTM embedding tables, and then trains the LSTM normally. BERT is not run inside each training batch.
-
-## Kaggle 2x T4 (DDP) Setup
-
-This repo supports training only on 2x T4 GPUs via PyTorch DistributedDataParallel (DDP).
-
-1) DDP is enabled by default in the Kaggle configs. If you edit the config, keep it enabled:
-
-```yaml
-training:
-    distributed_enable: true
-    distributed_backend: nccl
-    distributed_init_method: env://
-```
-
-2) In a Kaggle notebook cell, run the normal script (it will spawn 2 processes automatically):
-
-```bash
-python scripts/train.py --config configs/colab_random.yaml
-```
-
-3) If you prefer torchrun instead of notebook spawn:
-
-```bash
-torchrun --nproc_per_node=2 scripts/train.py --config configs/colab_random.yaml
-```
+Repeat with `configs/colab_bert.yaml` for the BERT-initialized experiment.
 
 Notes:
-- This training will error if it does not detect exactly two T4 GPUs.
+- Training will error if it does not detect exactly two T4 GPUs.
 - Total batch size scales with GPU count. If you hit OOM, lower `training.batch_size`.
 - Only rank 0 logs metrics, writes checkpoints, and creates plots.
 
@@ -162,7 +140,7 @@ Generated artifacts are written under `outputs/`:
 
 ## Notes
 
-- CPU/local configs were removed; T4 configs are now the supported profiles.
+- Only 2x T4 GPUs are supported.
 - `configs/colab_random.yaml` and `configs/colab_bert.yaml` use `device: cuda`.
 - Training uses the full dataset by default (`max_train_examples: null`).
 - MLflow tracking stays off unless you enable it in the config.
