@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
+import torch.multiprocessing as mp
 
 from src.config import parse_args, ensure_dirs
 from src.data.dataset import get_dataloaders
@@ -31,10 +32,18 @@ from src.data.tokenizer import build_tokenizer
 from src.data.preprocess import run_preprocessing
 from src.model.seq2seq import build_model
 from src.training.trainer import Trainer
-from src.training.utils import set_seed, get_device
+from src.training.utils import (
+    set_seed,
+    get_device,
+    get_device_for_rank,
+    init_distributed,
+    cleanup_distributed,
+    is_main_process,
+    barrier,
+)
 
 
-def _load_training_artifacts(config):
+def _load_training_artifacts(config, allow_bootstrap: bool = True):
     """Load or bootstrap processed data and tokenizer."""
     processed_dir = Path(config.data.processed_dir)
     required_files = [
@@ -47,6 +56,10 @@ def _load_training_artifacts(config):
 
     data = None
     if not all(path.exists() for path in required_files):
+        if not allow_bootstrap:
+            raise RuntimeError(
+                "Processed data missing. Run preprocessing on rank 0 first."
+            )
         print("\nProcessed data not found. Running preprocessing bootstrap ...")
         data = run_preprocessing(config)
 
@@ -64,52 +77,78 @@ def _load_training_artifacts(config):
     if tokenizer_model.exists():
         tokenizer = build_tokenizer(config.tokenizer)
     else:
+        if not allow_bootstrap:
+            raise RuntimeError(
+                "Tokenizer missing. Run preprocessing on rank 0 first."
+            )
         print("\nTokenizer not found. Training shared BPE tokenizer ...")
         tokenizer = build_tokenizer(config.tokenizer, texts=train_hi + train_mr)
 
     return tokenizer, train_hi, train_mr, val_hi, val_mr
 
 
-def main() -> None:
-    config = parse_args()
-    ensure_dirs(config)
+def _run_worker(rank: int, world_size: int, config) -> None:
+    if config.training.distributed_enable and world_size > 1:
+        init_method = config.training.distributed_init_method
+        backend = config.training.distributed_backend
+        init_distributed(rank, world_size, backend=backend, init_method=init_method)
+        local_rank = int(os.environ.get("LOCAL_RANK", rank))
+        device = get_device_for_rank(config.training.device, local_rank)
+    else:
+        device = get_device(config.training.device)
 
-    # Reproducibility
-    # Device
-    set_seed(config.training.seed, deterministic=config.training.deterministic)
+    set_seed(
+        config.training.seed + rank,
+        deterministic=config.training.deterministic,
+    )
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = config.training.cudnn_benchmark
-    device = get_device(config.training.device)
 
-    # Load tokenizer (must already be trained via preprocess.py)
-    print("\n" + "=" * 60)
-    print("LOADING TOKENIZER")
-    print("=" * 60)
-    tokenizer, train_hi, train_mr, val_hi, val_mr = _load_training_artifacts(config)
+    if is_main_process():
+        ensure_dirs(config)
 
-    print(f"  Train: {len(train_hi)} pairs")
-    print(f"  Val:   {len(val_hi)} pairs")
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("LOADING TOKENIZER")
+        print("=" * 60)
+        _load_training_artifacts(config, allow_bootstrap=True)
+
+    barrier()
+
+    tokenizer, train_hi, train_mr, val_hi, val_mr = _load_training_artifacts(
+        config, allow_bootstrap=False,
+    )
+
+    if is_main_process():
+        print(f"  Train: {len(train_hi)} pairs")
+        print(f"  Val:   {len(val_hi)} pairs")
 
     # Build DataLoaders
-    print("\n" + "=" * 60)
-    print("BUILDING DATALOADERS")
-    print("=" * 60)
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("BUILDING DATALOADERS")
+        print("=" * 60)
     loaders = get_dataloaders(
         config, tokenizer,
         train_src=train_hi, train_tgt=train_mr,
         val_src=val_hi, val_tgt=val_mr,
+        distributed=config.training.distributed_enable,
+        rank=rank,
+        world_size=world_size,
     )
 
     # Build model
-    print("\n" + "=" * 60)
-    print("BUILDING MODEL")
-    print("=" * 60)
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("BUILDING MODEL")
+        print("=" * 60)
     model = build_model(config.model, tokenizer)
 
     # Train
-    print("\n" + "=" * 60)
-    print("STARTING TRAINING")
-    print("=" * 60)
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("STARTING TRAINING")
+        print("=" * 60)
     trainer = Trainer(
         model=model,
         config=config,
@@ -121,13 +160,43 @@ def main() -> None:
 
     history = trainer.train()
 
-    print("\n" + "=" * 60)
-    print("TRAINING COMPLETE")
-    print("=" * 60)
-    print(f"  Best val loss: {trainer.best_val_loss:.4f}")
-    if history["val_bleu"]:
-        print(f"  Final val BLEU-100:  {history['val_bleu'][-1]:.2f}")
-        print(f"  Final val CHRF++-100: {history['val_chrf'][-1]:.2f}")
+    if is_main_process():
+        print("\n" + "=" * 60)
+        print("TRAINING COMPLETE")
+        print("=" * 60)
+        print(f"  Best val loss: {trainer.best_val_loss:.4f}")
+        if history["val_bleu"]:
+            print(f"  Final val BLEU-100:  {history['val_bleu'][-1]:.2f}")
+            print(f"  Final val CHRF++-100: {history['val_chrf'][-1]:.2f}")
+
+    cleanup_distributed()
+
+
+def main() -> None:
+    config = parse_args()
+
+    if config.training.distributed_enable:
+        world_size_env = os.environ.get("WORLD_SIZE")
+        if world_size_env:
+            world_size = int(world_size_env)
+            rank = int(os.environ.get("RANK", "0"))
+            _run_worker(rank, world_size, config)
+        else:
+            if not torch.cuda.is_available():
+                raise RuntimeError("DDP requires CUDA devices.")
+            world_size = torch.cuda.device_count()
+            if world_size < 2:
+                raise RuntimeError("DDP requested but fewer than 2 GPUs found.")
+            if config.training.distributed_init_method == "env://":
+                config.training.distributed_init_method = "tcp://127.0.0.1:29500"
+            mp.spawn(
+                _run_worker,
+                args=(world_size, config),
+                nprocs=world_size,
+                join=True,
+            )
+    else:
+        _run_worker(rank=0, world_size=1, config=config)
 
 
 if __name__ == "__main__":

@@ -86,6 +86,35 @@ python scripts/evaluate.py --config configs/colab_bert.yaml --checkpoint outputs
 
 The BERT experiment downloads `l3cube-pune/hindi-bert-v2` and `l3cube-pune/marathi-bert-v2` from Hugging Face, uses them once to initialize the LSTM embedding tables, and then trains the LSTM normally. BERT is not run inside each training batch.
 
+## Kaggle 2x T4 (DDP) Setup
+
+This repo now supports multi-GPU training via PyTorch DistributedDataParallel (DDP).
+
+1) Enable DDP in your config (example for random config):
+
+```yaml
+training:
+    distributed_enable: true
+    distributed_backend: nccl
+    distributed_init_method: env://
+```
+
+2) In a Kaggle notebook cell, run the normal script (it will spawn 2 processes automatically):
+
+```bash
+python scripts/train.py --config configs/colab_random.yaml
+```
+
+3) If you prefer torchrun instead of notebook spawn:
+
+```bash
+torchrun --nproc_per_node=2 scripts/train.py --config configs/colab_random.yaml
+```
+
+Notes:
+- Total batch size scales with GPU count. If you hit OOM, lower `training.batch_size`.
+- Only rank 0 logs metrics, writes checkpoints, and creates plots.
+
 ## Preprocessing Behavior
 
 Preprocessing keeps Hindi and Marathi sentence pairs aligned at every step.

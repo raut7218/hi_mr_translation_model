@@ -20,6 +20,8 @@ from typing import Any
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -37,6 +39,8 @@ from src.training.utils import (
     get_optimizer,
     get_scheduler,
     save_checkpoint,
+    is_distributed,
+    is_main_process,
 )
 from src.visualization.plots import plot_training_curves
 
@@ -67,14 +71,6 @@ class Trainer:
         except (AttributeError, TypeError):
             self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
 
-        # Optimizer & scheduler
-        self.optimizer = get_optimizer(model, config.training)
-        self.scheduler = get_scheduler(
-            self.optimizer,
-            config.training,
-            steps_per_epoch=max(1, len(train_loader)),
-        )
-
         # Loss function: cross-entropy with label smoothing, ignoring PAD
         self.criterion = nn.CrossEntropyLoss(
             ignore_index=tokenizer.pad_id,
@@ -97,6 +93,18 @@ class Trainer:
         else:
             print("Mixed precision: disabled")
 
+        if is_distributed():
+            device_ids = [device.index] if device.type == "cuda" else None
+            self.model = DDP(self.model, device_ids=device_ids)
+
+        # Optimizer & scheduler
+        self.optimizer = get_optimizer(self.model, config.training)
+        self.scheduler = get_scheduler(
+            self.optimizer,
+            config.training,
+            steps_per_epoch=max(1, len(train_loader)),
+        )
+
     # ------------------------------------------------------------------
     # Main training loop
     # ------------------------------------------------------------------
@@ -108,7 +116,7 @@ class Trainer:
             Training history dict.
         """
         cfg = self.config.training
-        mlflow_enabled = self.config.mlflow.enabled
+        mlflow_enabled = self.config.mlflow.enabled and is_main_process()
 
         mlflow_ctx = nullcontext()
         if mlflow_enabled:
@@ -128,6 +136,10 @@ class Trainer:
                 self._log_hyperparams()
 
             for epoch in range(1, cfg.num_epochs + 1):
+                sampler = getattr(self.train_loader, "sampler", None)
+                if sampler is not None and hasattr(sampler, "set_epoch"):
+                    sampler.set_epoch(epoch)
+
                 # Compute teacher forcing ratio (decays over epochs)
                 tf_ratio = max(
                     0.0,
@@ -135,11 +147,20 @@ class Trainer:
                 )
 
                 # --- Train ---
-                train_loss = self._train_epoch(epoch, tf_ratio)
+                total_loss, num_batches = self._train_epoch(epoch, tf_ratio)
+                if is_distributed():
+                    loss_tensor = torch.tensor(
+                        [total_loss, float(num_batches)],
+                        device=self.device,
+                    )
+                    dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+                    train_loss = loss_tensor[0].item() / max(loss_tensor[1].item(), 1.0)
+                else:
+                    train_loss = total_loss / max(num_batches, 1)
                 self.history["train_loss"].append(train_loss)
 
                 # --- Validate ---
-                if epoch % cfg.eval_every_n_epochs == 0:
+                if epoch % cfg.eval_every_n_epochs == 0 and is_main_process():
                     train_metrics = self._compute_translation_metrics(
                         self.train_loader,
                         max_eval_batches=cfg.train_metric_batches,
@@ -175,7 +196,7 @@ class Trainer:
                     if val_loss < self.best_val_loss:
                         self.best_val_loss = val_loss
                         save_checkpoint(
-                            self.model, self.optimizer, epoch,
+                            self._unwrap_model(), self.optimizer, epoch,
                             {"val_loss": val_loss, **val_metrics},
                             os.path.join(cfg.checkpoint_dir, "best.pt"),
                         )
@@ -196,23 +217,24 @@ class Trainer:
                         mlflow.log_metric("train_loss", train_loss, step=epoch)
 
                 # Periodic checkpoint
-                if epoch % cfg.save_every_n_epochs == 0:
+                if epoch % cfg.save_every_n_epochs == 0 and is_main_process():
                     save_checkpoint(
-                        self.model, self.optimizer, epoch,
+                        self._unwrap_model(), self.optimizer, epoch,
                         {"train_loss": train_loss},
                         os.path.join(cfg.checkpoint_dir, f"epoch_{epoch}.pt"),
                     )
 
             # Final plots
-            plot_paths = plot_training_curves(
-                self.history, self.config.plotting.output_dir,
-            )
-            history_paths = self._save_history()
-            if mlflow_enabled:
-                for path in plot_paths:
-                    mlflow.log_artifact(path)
-                for path in history_paths:
-                    mlflow.log_artifact(path)
+            if is_main_process():
+                plot_paths = plot_training_curves(
+                    self.history, self.config.plotting.output_dir,
+                )
+                history_paths = self._save_history()
+                if mlflow_enabled:
+                    for path in plot_paths:
+                        mlflow.log_artifact(path)
+                    for path in history_paths:
+                        mlflow.log_artifact(path)
 
         return self.history
 
@@ -220,7 +242,7 @@ class Trainer:
     # Train one epoch
     # ------------------------------------------------------------------
 
-    def _train_epoch(self, epoch: int, tf_ratio: float) -> float:
+    def _train_epoch(self, epoch: int, tf_ratio: float) -> tuple[float, int]:
         """Train for one epoch.
 
         Returns:
@@ -234,6 +256,7 @@ class Trainer:
             self.train_loader,
             desc=f"Epoch {epoch} [Train]",
             leave=False,
+            disable=not is_main_process(),
         )
 
         for batch in pbar:
@@ -271,7 +294,7 @@ class Trainer:
             num_batches += 1
             pbar.set_postfix(loss=f"{loss.item():.4f}")
 
-        return total_loss / max(num_batches, 1)
+        return total_loss, num_batches
 
     # ------------------------------------------------------------------
     # Validate
@@ -440,3 +463,9 @@ class Trainer:
         print(f"  History saved: {json_path}")
         print(f"  History saved: {csv_path}")
         return [json_path, csv_path]
+
+    def _unwrap_model(self) -> nn.Module:
+        """Return the underlying model (DDP-safe) for checkpointing."""
+        if isinstance(self.model, DDP):
+            return self.model.module
+        return self.model

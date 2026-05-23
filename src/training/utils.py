@@ -9,6 +9,7 @@ import random
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 
 from src.config import TrainingConfig
@@ -24,6 +25,66 @@ def set_seed(seed: int, deterministic: bool = False) -> None:
 
     torch.backends.cudnn.deterministic = deterministic
     torch.backends.cudnn.benchmark = not deterministic
+
+
+def init_distributed(
+    rank: int,
+    world_size: int,
+    backend: str = "nccl",
+    init_method: str = "env://",
+) -> None:
+    """Initialize torch.distributed for DDP."""
+    if dist.is_initialized():
+        return
+    if world_size <= 1:
+        return
+    dist.init_process_group(
+        backend=backend,
+        init_method=init_method,
+        rank=rank,
+        world_size=world_size,
+    )
+
+
+def cleanup_distributed() -> None:
+    """Tear down the distributed process group."""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def is_distributed() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def get_rank() -> int:
+    if is_distributed():
+        return dist.get_rank()
+    return 0
+
+
+def get_world_size() -> int:
+    if is_distributed():
+        return dist.get_world_size()
+    return 1
+
+
+def is_main_process() -> bool:
+    return get_rank() == 0
+
+
+def barrier() -> None:
+    if is_distributed():
+        dist.barrier()
+
+
+def reduce_tensor_mean(value: torch.Tensor) -> torch.Tensor:
+    """All-reduce a scalar tensor and return the mean across ranks."""
+    if not is_distributed():
+        return value
+    value = value.clone()
+    dist.all_reduce(value, op=dist.ReduceOp.SUM)
+    value /= get_world_size()
+    return value
 
 
 def get_device(device_preference: str = "auto") -> torch.device:
@@ -51,6 +112,18 @@ def get_device(device_preference: str = "auto") -> torch.device:
         torch.set_num_interop_threads(1)
         print(f"Using CPU with {target_threads} torch threads")
 
+    return device
+
+
+def get_device_for_rank(device_preference: str, local_rank: int) -> torch.device:
+    """Get the per-rank device and set the CUDA device when needed."""
+    preference = (device_preference or "auto").lower()
+    if preference in {"auto", "cuda", "gpu"} and torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+        torch.set_float32_matmul_precision("high")
+    else:
+        device = get_device(device_preference)
     return device
 
 

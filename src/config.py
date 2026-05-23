@@ -85,6 +85,9 @@ class TrainingConfig:
     persistent_workers: bool = True
     train_metric_batches: int = 10
     val_metric_batches: int = 20
+    distributed_enable: bool = False
+    distributed_backend: str = "nccl"
+    distributed_init_method: str = "env://"
 
 
 @dataclass

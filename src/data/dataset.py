@@ -13,6 +13,7 @@ from typing import Optional
 
 import torch
 from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data.distributed import DistributedSampler
 
 from src.config import NMTConfig
 from src.data.tokenizer import SharedTokenizer
@@ -171,6 +172,9 @@ def get_dataloaders(
     val_tgt: list[str],
     test_src: Optional[list[str]] = None,
     test_tgt: Optional[list[str]] = None,
+    distributed: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
 ) -> dict[str, DataLoader]:
     """Build DataLoaders for train, val, and optionally test splits.
 
@@ -203,19 +207,40 @@ def get_dataloaders(
     num_workers = max(0, int(config.training.num_workers))
     pin_memory = bool(config.training.pin_memory)
     persistent_workers = bool(config.training.persistent_workers and num_workers > 0)
-    train_batch_sampler = BucketBatchSampler(
-        train_lengths,
-        batch_size=config.training.batch_size,
-        bucket_multiplier=50,
-        shuffle=True,
-        drop_last=True,
-        seed=config.training.seed,
-    )
+    train_sampler = None
+    val_sampler = None
+    train_batch_sampler = None
+    if distributed and world_size > 1:
+        train_sampler = DistributedSampler(
+            train_ds,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            drop_last=True,
+        )
+        val_sampler = DistributedSampler(
+            val_ds,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            drop_last=False,
+        )
+    else:
+        train_batch_sampler = BucketBatchSampler(
+            train_lengths,
+            batch_size=config.training.batch_size,
+            bucket_multiplier=50,
+            shuffle=True,
+            drop_last=True,
+            seed=config.training.seed,
+        )
 
     loaders: dict[str, DataLoader] = {
         "train": DataLoader(
             train_ds,
             batch_sampler=train_batch_sampler,
+            sampler=train_sampler,
+            batch_size=None if train_batch_sampler is not None else config.training.batch_size,
             num_workers=num_workers,
             collate_fn=_collate,
             pin_memory=pin_memory,
@@ -225,6 +250,7 @@ def get_dataloaders(
             val_ds,
             batch_size=config.training.batch_size,
             shuffle=False,
+            sampler=val_sampler,
             num_workers=num_workers,
             collate_fn=_collate,
             pin_memory=pin_memory,
