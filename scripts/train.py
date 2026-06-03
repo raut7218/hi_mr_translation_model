@@ -88,7 +88,8 @@ def _load_training_artifacts(config, allow_bootstrap: bool = True):
 
 
 def _run_worker(rank: int, world_size: int, config) -> None:
-    if config.training.distributed_enable and world_size > 1:
+    use_distributed = config.training.distributed_enable and world_size > 1
+    if use_distributed:
         init_method = config.training.distributed_init_method
         backend = config.training.distributed_backend
         init_distributed(rank, world_size, backend=backend, init_method=init_method)
@@ -132,7 +133,7 @@ def _run_worker(rank: int, world_size: int, config) -> None:
         config, tokenizer,
         train_src=train_hi, train_tgt=train_mr,
         val_src=val_hi, val_tgt=val_mr,
-        distributed=config.training.distributed_enable,
+        distributed=use_distributed,
         rank=rank,
         world_size=world_size,
     )
@@ -172,51 +173,56 @@ def _run_worker(rank: int, world_size: int, config) -> None:
     cleanup_distributed()
 
 
-def _assert_two_t4_gpus() -> None:
+def _print_hardware_summary() -> None:
+    print("\n" + "=" * 60)
+    print("LOCAL HARDWARE")
+    print("=" * 60)
+    print(f"  PyTorch:        {torch.__version__}")
+    print(f"  CUDA available: {torch.cuda.is_available()}")
+    print(f"  CUDA runtime:   {torch.version.cuda}")
+    if torch.cuda.is_available():
+        for index in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(index)
+            total_gb = props.total_memory / (1024 ** 3)
+            print(f"  GPU {index}:        {props.name} ({total_gb:.1f} GB)")
+    else:
+        print("  GPU:            none; falling back according to training.device")
+
+
+def _local_world_size(config) -> int:
+    """Choose a safe local worker count for CUDA/DDP."""
+    if not config.training.distributed_enable:
+        return 1
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required. This training supports only 2x T4 GPUs.")
-    device_count = torch.cuda.device_count()
-    if device_count != 2:
-        raise RuntimeError(
-            f"Expected exactly 2 GPUs, found {device_count}. "
-            "This training supports only 2x T4 GPUs."
-        )
-    for index in range(device_count):
-        name = torch.cuda.get_device_name(index)
-        if "T4" not in name:
-            raise RuntimeError(
-                f"GPU {index} is '{name}'. This training supports only 2x T4 GPUs."
-            )
+        return 1
+    if os.name == "nt":
+        # NCCL is not available on Windows, and this local GTX setup is single GPU.
+        return 1
+    return max(1, torch.cuda.device_count())
 
 
 def main() -> None:
     config = parse_args()
-
-    if not config.training.distributed_enable:
-        raise RuntimeError("DDP must be enabled. This training supports only 2x T4 GPUs.")
-
-    _assert_two_t4_gpus()
+    _print_hardware_summary()
 
     world_size_env = os.environ.get("WORLD_SIZE")
     if world_size_env:
         world_size = int(world_size_env)
-        if world_size != 2:
-            raise RuntimeError(
-                f"WORLD_SIZE={world_size} is not supported. "
-                "This training supports only 2x T4 GPUs."
-            )
         rank = int(os.environ.get("RANK", "0"))
         _run_worker(rank, world_size, config)
     else:
-        world_size = 2
-        if config.training.distributed_init_method == "env://":
+        world_size = _local_world_size(config)
+        if world_size > 1 and config.training.distributed_init_method == "env://":
             config.training.distributed_init_method = "tcp://127.0.0.1:29500"
-        mp.spawn(
-            _run_worker,
-            args=(world_size, config),
-            nprocs=world_size,
-            join=True,
-        )
+        if world_size > 1:
+            mp.spawn(
+                _run_worker,
+                args=(world_size, config),
+                nprocs=world_size,
+                join=True,
+            )
+        else:
+            _run_worker(rank=0, world_size=1, config=config)
 
 
 if __name__ == "__main__":

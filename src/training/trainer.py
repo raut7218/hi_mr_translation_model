@@ -75,7 +75,9 @@ class Trainer:
         self.criterion = nn.CrossEntropyLoss(
             ignore_index=tokenizer.pad_id,
             label_smoothing=config.training.label_smoothing,
+            reduction="sum",
         )
+        self.microbatch_size = self._select_microbatch_size(config.training.batch_size)
 
         # Training state
         self.best_val_loss = float("inf")
@@ -92,6 +94,12 @@ class Trainer:
             print("Mixed precision: enabled (FP16 AMP)")
         else:
             print("Mixed precision: disabled")
+        if self.microbatch_size < config.training.batch_size:
+            print(
+                "CUDA microbatching: enabled "
+                f"({self.microbatch_size} samples at a time, "
+                f"effective batch {config.training.batch_size})"
+            )
 
         if is_distributed():
             device_ids = [device.index] if device.type == "cuda" else None
@@ -264,22 +272,8 @@ class Trainer:
             tgt = batch["tgt"].to(self.device, non_blocking=True)
             src_lengths = batch["src_lengths"].to(self.device, non_blocking=True)
 
-            self.optimizer.zero_grad(set_to_none=True)
+            batch_loss = self._train_batch_with_microbatches(src, tgt, src_lengths, tf_ratio)
 
-            # Forward pass
-            # outputs: (batch, tgt_len - 1, vocab_size)
-            with self._autocast():
-                outputs = self.model(src, tgt, src_lengths, tf_ratio)
-
-                # Compute loss
-                # Reshape: (batch * (tgt_len - 1), vocab_size) vs (batch * (tgt_len - 1),)
-                output_dim = outputs.shape[-1]
-                outputs_flat = outputs.contiguous().view(-1, output_dim)
-                targets_flat = tgt[:, 1:].contiguous().view(-1)  # Skip BOS
-                loss = self.criterion(outputs_flat, targets_flat)
-
-            # Backward pass
-            self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.config.training.grad_clip,
@@ -290,9 +284,9 @@ class Trainer:
             if self.scheduler is not None:
                 self.scheduler.step()
 
-            total_loss += loss.item()
+            total_loss += batch_loss
             num_batches += 1
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
+            pbar.set_postfix(loss=f"{batch_loss:.4f}")
 
         return total_loss, num_batches
 
@@ -326,24 +320,14 @@ class Trainer:
             src_lengths = batch["src_lengths"].to(self.device, non_blocking=True)
 
             # Loss computation (with teacher forcing = 1.0 for consistent loss)
-            with self._autocast():
-                outputs = self.model(src, tgt, src_lengths, teacher_forcing_ratio=1.0)
-                output_dim = outputs.shape[-1]
-                outputs_flat = outputs.contiguous().view(-1, output_dim)
-                targets_flat = tgt[:, 1:].contiguous().view(-1)
-                loss = self.criterion(outputs_flat, targets_flat)
+            loss = self._eval_batch_loss(src, tgt, src_lengths)
 
-            total_loss += loss.item()
+            total_loss += loss
             num_batches += 1
 
             # Translation metrics (on a subset to save time)
             if i < max_eval_batches:
-                with self._autocast():
-                    translations = translate_batch(
-                        self._unwrap_model(), src, src_lengths, self.tokenizer,
-                        strategy="greedy",
-                        max_len=self.config.decoding.max_decode_len,
-                    )
+                translations = self._translate_in_microbatches(src, src_lengths)
                 references = [
                     self.tokenizer.decode(tgt[j].tolist())
                     for j in range(tgt.size(0))
@@ -382,12 +366,7 @@ class Trainer:
             tgt = batch["tgt"].to(self.device, non_blocking=True)
             src_lengths = batch["src_lengths"].to(self.device, non_blocking=True)
 
-            with self._autocast():
-                translations = translate_batch(
-                    self._unwrap_model(), src, src_lengths, self.tokenizer,
-                    strategy="greedy",
-                    max_len=self.config.decoding.max_decode_len,
-                )
+            translations = self._translate_in_microbatches(src, src_lengths)
             references = [
                 self.tokenizer.decode(tgt[j].tolist())
                 for j in range(tgt.size(0))
@@ -435,6 +414,137 @@ class Trainer:
         if not self.use_amp:
             return nullcontext()
         return torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+
+    def _select_microbatch_size(self, batch_size: int) -> int:
+        """Choose an internal chunk size for small local CUDA cards."""
+        env_value = os.environ.get("HI_MR_MICROBATCH_SIZE")
+        if env_value:
+            try:
+                return max(1, min(batch_size, int(env_value)))
+            except ValueError:
+                print(f"Ignoring invalid HI_MR_MICROBATCH_SIZE={env_value!r}")
+
+        if self.device.type != "cuda":
+            return batch_size
+
+        props = torch.cuda.get_device_properties(self.device)
+        total_gb = props.total_memory / (1024 ** 3)
+        if total_gb <= 4.5:
+            return min(batch_size, 8)
+        if total_gb <= 8.5:
+            return min(batch_size, 16)
+        return batch_size
+
+    def _iter_microbatches(
+        self,
+        src: torch.Tensor,
+        tgt: torch.Tensor | None,
+        src_lengths: torch.Tensor,
+    ):
+        step = max(1, self.microbatch_size)
+        for start in range(0, src.size(0), step):
+            end = start + step
+            yield (
+                src[start:end],
+                tgt[start:end] if tgt is not None else None,
+                src_lengths[start:end],
+            )
+
+    def _loss_sum_and_tokens(
+        self,
+        src: torch.Tensor,
+        tgt: torch.Tensor,
+        src_lengths: torch.Tensor,
+        teacher_forcing_ratio: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        outputs = self.model(src, tgt, src_lengths, teacher_forcing_ratio)
+        output_dim = outputs.shape[-1]
+        outputs_flat = outputs.contiguous().view(-1, output_dim)
+        targets_flat = tgt[:, 1:].contiguous().view(-1)
+        loss_sum = self.criterion(outputs_flat, targets_flat)
+        token_count = targets_flat.ne(self.tokenizer.pad_id).sum().clamp_min(1)
+        return loss_sum, token_count
+
+    def _train_batch_with_microbatches(
+        self,
+        src: torch.Tensor,
+        tgt: torch.Tensor,
+        src_lengths: torch.Tensor,
+        tf_ratio: float,
+    ) -> float:
+        while True:
+            self.optimizer.zero_grad(set_to_none=True)
+            try:
+                with torch.no_grad():
+                    total_tokens = tgt[:, 1:].ne(self.tokenizer.pad_id).sum().clamp_min(1)
+
+                total_loss_sum = 0.0
+                for src_mb, tgt_mb, src_lengths_mb in self._iter_microbatches(
+                    src, tgt, src_lengths,
+                ):
+                    assert tgt_mb is not None
+                    with self._autocast():
+                        loss_sum, _ = self._loss_sum_and_tokens(
+                            src_mb, tgt_mb, src_lengths_mb, tf_ratio,
+                        )
+                        loss = loss_sum / total_tokens
+                    self.scaler.scale(loss).backward()
+                    total_loss_sum += float(loss_sum.detach().item())
+
+                return total_loss_sum / float(total_tokens.item())
+            except RuntimeError as exc:
+                if not self._is_cuda_oom(exc) or self.microbatch_size <= 1:
+                    raise
+                self.optimizer.zero_grad(set_to_none=True)
+                self.microbatch_size = max(1, self.microbatch_size // 2)
+                torch.cuda.empty_cache()
+                print(
+                    "CUDA OOM while training; retrying batch with "
+                    f"microbatch_size={self.microbatch_size}"
+                )
+
+    @torch.no_grad()
+    def _eval_batch_loss(
+        self,
+        src: torch.Tensor,
+        tgt: torch.Tensor,
+        src_lengths: torch.Tensor,
+    ) -> float:
+        total_loss_sum = 0.0
+        total_tokens = 0
+        for src_mb, tgt_mb, src_lengths_mb in self._iter_microbatches(
+            src, tgt, src_lengths,
+        ):
+            assert tgt_mb is not None
+            with self._autocast():
+                loss_sum, token_count = self._loss_sum_and_tokens(
+                    src_mb, tgt_mb, src_lengths_mb, teacher_forcing_ratio=1.0,
+                )
+            total_loss_sum += float(loss_sum.item())
+            total_tokens += int(token_count.item())
+        return total_loss_sum / max(total_tokens, 1)
+
+    @torch.no_grad()
+    def _translate_in_microbatches(
+        self,
+        src: torch.Tensor,
+        src_lengths: torch.Tensor,
+    ) -> list[str]:
+        translations: list[str] = []
+        for src_mb, _, src_lengths_mb in self._iter_microbatches(src, None, src_lengths):
+            with self._autocast():
+                translations.extend(
+                    translate_batch(
+                        self._unwrap_model(), src_mb, src_lengths_mb, self.tokenizer,
+                        strategy="greedy",
+                        max_len=self.config.decoding.max_decode_len,
+                    )
+                )
+        return translations
+
+    def _is_cuda_oom(self, exc: RuntimeError) -> bool:
+        message = str(exc).lower()
+        return "cuda" in message and "out of memory" in message
 
     def _save_history(self) -> list[str]:
         """Persist metric history for reports and reproducibility."""

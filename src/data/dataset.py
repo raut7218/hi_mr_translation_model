@@ -235,16 +235,22 @@ def get_dataloaders(
             seed=config.training.seed,
         )
 
+    train_loader_kwargs = {
+        "num_workers": num_workers,
+        "collate_fn": _collate,
+        "pin_memory": pin_memory,
+        "persistent_workers": persistent_workers,
+    }
+    if train_batch_sampler is not None:
+        train_loader_kwargs["batch_sampler"] = train_batch_sampler
+    else:
+        train_loader_kwargs["sampler"] = train_sampler
+        train_loader_kwargs["batch_size"] = config.training.batch_size
+
     loaders: dict[str, DataLoader] = {
         "train": DataLoader(
             train_ds,
-            batch_sampler=train_batch_sampler,
-            sampler=train_sampler,
-            batch_size=None if train_batch_sampler is not None else config.training.batch_size,
-            num_workers=num_workers,
-            collate_fn=_collate,
-            pin_memory=pin_memory,
-            persistent_workers=persistent_workers,
+            **train_loader_kwargs,
         ),
         "val": DataLoader(
             val_ds,

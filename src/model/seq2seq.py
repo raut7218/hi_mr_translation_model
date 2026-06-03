@@ -8,6 +8,9 @@ a factory function to build the model from config.
 from __future__ import annotations
 
 import gc
+import hashlib
+import os
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -16,6 +19,10 @@ from src.config import ModelConfig
 from src.data.tokenizer import SharedTokenizer
 from src.model.decoder import LSTMDecoder
 from src.model.encoder import LSTMEncoder
+
+# HF Xet/CAS downloads can stall on some Windows networks. Prefer the regular
+# hub downloader unless the user explicitly chose another setting before import.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 
 class Seq2Seq(nn.Module):
@@ -192,6 +199,26 @@ def _build_bert_initialized_embedding(
     BERT is used once at model construction time. Training still uses a normal
     nn.Embedding layer, which keeps the LSTM experiment fast on Colab/T4.
     """
+    cache_path = _bert_embedding_cache_path(
+        model_name=model_name,
+        tokenizer=tokenizer,
+        embedding_dim=embedding_dim,
+        padding_idx=padding_idx,
+        freeze=freeze,
+    )
+    if cache_path.exists():
+        table = torch.load(cache_path, map_location="cpu", weights_only=True)
+        embedding = nn.Embedding.from_pretrained(
+            table,
+            freeze=freeze,
+            padding_idx=padding_idx,
+        )
+        print(
+            f"  Loaded cached BERT embeddings for {model_name}: {cache_path} "
+            f"(trainable={not freeze})"
+        )
+        return embedding
+
     try:
         from transformers import AutoModel, AutoTokenizer
     except ImportError as exc:
@@ -199,8 +226,7 @@ def _build_bert_initialized_embedding(
             "BERT embeddings require transformers. Install requirements.txt first."
         ) from exc
 
-    hf_tokenizer = AutoTokenizer.from_pretrained(model_name)
-    hf_model = AutoModel.from_pretrained(model_name)
+    hf_tokenizer, hf_model = _load_hf_bert_model(model_name)
     hf_model.eval()
 
     source_weight = hf_model.get_input_embeddings().weight.detach().cpu()
@@ -256,12 +282,113 @@ def _build_bert_initialized_embedding(
         f"  Initialized {tokenizer.vocab_size:,} embeddings from {model_name} "
         f"(bert_dim={bert_dim}, trainable={not freeze})"
     )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(table.cpu(), cache_path)
+    print(f"  Cached BERT embedding table: {cache_path}")
 
     del hf_model
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     return embedding
+
+
+def _load_hf_bert_model(model_name: str):
+    """Load a Hugging Face BERT model, using completed local cache first."""
+    from transformers import AutoModel, AutoTokenizer
+
+    print(f"  Loading Hugging Face model: {model_name}", flush=True)
+    try:
+        hf_tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            local_files_only=True,
+        )
+        hf_model = AutoModel.from_pretrained(
+            model_name,
+            local_files_only=True,
+            use_safetensors=True,
+        )
+        print("  Using completed local Hugging Face cache", flush=True)
+        return hf_tokenizer, hf_model
+    except (OSError, AttributeError, TypeError) as local_exc:
+        print(
+            "  Completed local Hugging Face cache not found or is incomplete; "
+            "downloading files with Hugging Face progress bars.",
+            flush=True,
+        )
+        try:
+            snapshot_path = _download_hf_snapshot(model_name)
+            hf_tokenizer = AutoTokenizer.from_pretrained(
+                snapshot_path,
+                local_files_only=True,
+            )
+            hf_model = AutoModel.from_pretrained(
+                snapshot_path,
+                local_files_only=True,
+                use_safetensors=True,
+            )
+            return hf_tokenizer, hf_model
+        except (OSError, AttributeError, TypeError) as download_exc:
+            raise RuntimeError(
+                f"Could not load {model_name}. The local cache is incomplete and "
+                "the download did not finish. Stop any stuck training process, "
+                "then rerun; Hugging Face will resume the incomplete weight file. "
+                "If it still stalls at 0%, set HF_HUB_DISABLE_XET=1 in the shell "
+                "and try again."
+            ) from download_exc
+
+
+def _download_hf_snapshot(model_name: str) -> str:
+    """Download the needed Hugging Face files with visible tqdm progress bars."""
+    from huggingface_hub import snapshot_download
+
+    patterns = [
+        "config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "vocab.txt",
+        "spiece.model",
+        "model.safetensors",
+        "pytorch_model.bin",
+    ]
+    print("    Download progress will appear below:", flush=True)
+    snapshot_path = snapshot_download(
+        repo_id=model_name,
+        allow_patterns=patterns,
+        ignore_patterns=[
+            "tf_model.*",
+            "flax_model.*",
+            "*.h5",
+            "*.msgpack",
+        ],
+        local_files_only=False,
+    )
+    print(f"    Download complete: {snapshot_path}", flush=True)
+    return snapshot_path
+
+
+def _bert_embedding_cache_path(
+    model_name: str,
+    tokenizer: SharedTokenizer,
+    embedding_dim: int,
+    padding_idx: int,
+    freeze: bool,
+) -> Path:
+    """Path for the generated normal nn.Embedding table."""
+    raw_key = "|".join(
+        [
+            model_name,
+            str(tokenizer.vocab_size),
+            str(embedding_dim),
+            str(padding_idx),
+            str(freeze),
+        ]
+    )
+    digest = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:16]
+    safe_name = model_name.replace("/", "--")
+    cache_root = Path(os.environ.get("HI_MR_BERT_EMBED_CACHE", "outputs/bert_embeddings"))
+    return cache_root / f"{safe_name}-{digest}.pt"
 
 
 def _sentencepiece_piece_to_text(piece: str) -> str:

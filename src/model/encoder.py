@@ -99,7 +99,7 @@ class LSTMEncoder(nn.Module):
             )
             outputs, (hidden, cell) = self.lstm(packed)
             outputs, _ = nn.utils.rnn.pad_packed_sequence(
-                outputs, batch_first=True,
+                outputs, batch_first=True, total_length=src.size(1),
             )
         else:
             outputs, (hidden, cell) = self.lstm(embedded)
