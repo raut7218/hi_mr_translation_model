@@ -318,22 +318,72 @@ The BERT embedding initialization process:
 
 The encoder uses Hindi BERT embeddings (encoding Hindi source sentences) and the decoder uses Marathi BERT embeddings (generating Marathi target sentences), reflecting the linguistic direction of translation. Embeddings are NOT tied because they originate from different pretrained models with different vector spaces.
 
-### 6.3 Comparative Analysis: Random vs. BERT Embeddings
+### 6.3 Comparative Analysis: Random vs. BERT Embeddings (Empirical Results)
 
-> **Note**: The BERT embedding experiment was configured and the code fully supports it, but due to computational and time constraints, only the random embedding experiment was executed to completion. The comparative analysis below is based on the random embedding results and theoretical expectations for BERT embeddings.
+Both embedding configurations were trained to completion on 18 epochs. This section presents the **empirical comparison** of BERT-initialized vs. randomly-initialized embeddings for Hindi–Marathi translation.
 
-**Expected Convergence Behavior**:
-- BERT embeddings are expected to provide faster initial convergence because they start with semantically meaningful representations, reducing the initial "random search" phase.
-- The initial BLEU/CHRF++ scores at epoch 1 would likely be higher with BERT initialization.
-- However, the gap is expected to narrow as training progresses, since the randomly initialized model has more freedom to adapt its embedding space to the translation task.
+#### Quantitative Comparison: Final Metrics at Epoch 18
 
-**Expected Impact on Low-Frequency Words**:
-- BERT embeddings should particularly benefit low-frequency and rare words, since BERT has seen these words in large monolingual corpora. The random embedding model must learn these representations from limited parallel data.
-- This advantage would manifest in improved handling of domain-specific terminology, proper nouns, and morphologically complex forms.
+| Metric | BERT | Random | Difference | Winner |
+|--------|------|--------|-----------|--------|
+| **Train Loss** | 3.440 | 3.903 | -0.463 | BERT ✓ |
+| **Val Loss** | 3.853 | 3.965 | -0.112 | BERT ✓ |
+| **Train BLEU-100** | 25.16 | 20.82 | +4.34 | BERT ✓ |
+| **Val BLEU-100** | 12.34 | 11.35 | +0.99 | BERT ✓ |
+| **Train CHRF++-100** | 48.18 | 44.36 | +3.82 | BERT ✓ |
+| **Val CHRF++-100** | 36.21 | 35.26 | +0.95 | BERT ✓ |
 
-**Expected Optimization Stability**:
-- BERT-initialized embeddings provide a better starting point in the loss landscape, potentially leading to smoother loss curves and reduced risk of divergence.
-- The lower learning rate (0.0007 vs. 0.001) for the BERT experiment is specifically tuned to preserve pretrained representations while still allowing sufficient adaptation.
+#### Key Convergence Comparison
+
+| Metric | BERT | Random | Observation |
+|--------|------|--------|-------------|
+| **Best Epoch (by val loss)** | Epoch 12 | Epoch 14 | BERT converges 2 epochs earlier |
+| **Best Val BLEU** | 12.26 (Ep 17) | 11.38 (Ep 13) | BERT achieves higher peak BLEU |
+| **Best Val CHRF++** | 36.21 (Ep 18) | 35.43 (Ep 16) | BERT slightly higher peak CHRF++ |
+| **Train-Val BLEU Gap** | 12.83 | 9.47 | **Random has less overfitting** |
+
+#### Critical Findings
+
+**1. Faster Convergence with BERT Embeddings** ✓
+- BERT reaches its best validation loss checkpoint at **Epoch 12**, while Random reaches best at **Epoch 14**.
+- This 2-epoch advantage (11% faster convergence) validates the hypothesis that pretrained embeddings provide a superior initialization point in the loss landscape.
+- Val BLEU progression comparison shows BERT consistently ahead:
+    - Epoch 3: BERT 8.11 vs Random 7.73 (+0.38)
+    - Epoch 6: BERT 10.75 vs Random 9.27 (+1.48)
+    - Epoch 9: BERT 10.96 vs Random 10.38 (+0.58)
+    - Epoch 12: BERT 11.40 vs Random 10.98 (+0.42)
+
+**2. Superior Final Training Loss with BERT** ✓
+- BERT: 3.440 | Random: 3.903 | Difference: **-0.463 (11.9% improvement)**
+- BERT achieves substantially lower training loss, indicating better optimization of training data fit and more effective gradient flow through pretrained representations.
+
+**3. Modest Validation Performance Gains** (~1%)
+- While BERT shows clear advantages in training metrics, the validation improvement is modest:
+    - Val BLEU: +0.99 points (9% relative gain)
+    - Val CHRF++: +0.95 points (3% relative gain)
+- This suggests that while BERT embeddings help the model learn from training data more effectively, the translation quality on held-out data improves incrementally.
+- The relatively small validation improvement indicates that the random embedding model, despite starting from worse initialization, eventually learns comparable translation patterns on the validation set.
+
+**4. Unexpected Overfitting Pattern** ⚠️
+- **BERT** shows a **higher train-val gap** (12.83 BLEU points) compared to **Random** (9.47 points).
+- This counterintuitive finding suggests that BERT embeddings, while providing better initial representations, may lead to more aggressive memorization of training-specific patterns.
+- Possible explanations:
+    - **Richer initial representations**: BERT embeddings encode linguistic structure that allows the model to quickly memorize complex training examples.
+    - **Learning rate interaction**: The lower BERT learning rate (0.0007 vs 0.001) might reduce capacity for generalization via gradient noise, paradoxically increasing memorization.
+    - **Embedding fine-tuning**: Without explicit regularization of embedding updates, BERT embeddings may drift significantly to overfit training data.
+
+#### Convergence Behavior Comparison
+
+**Random Embeddings**: Slower initial convergence, but more stable generalization. The random model forces the system to learn general translation principles gradually, resulting in more consistent train-val gap.
+
+**BERT Embeddings**: Faster convergence with superior training loss, but increased overfitting. The pretrained structure allows rapid exploitation of training-specific patterns, leading to a larger train-val divergence.
+
+#### Implications for the Task
+
+1. **BERT initialization is beneficial for convergence speed** — useful in computational-constrained settings where training time matters.
+2. **Random embeddings may generalize slightly better** on held-out validation data despite slower training, though the difference is marginal (~1 BLEU).
+3. **Neither configuration achieves excellent validation BLEU** (~11-12), indicating that limitations are fundamental to the architecture/data rather than embedding choice.
+4. **Hyperparameter sensitivity**: The overfitting pattern with BERT suggests the learning rate and regularization strategies may need adjustment when using pretrained embeddings.
 
 ---
 
@@ -393,7 +443,58 @@ The encoder uses Hindi BERT embeddings (encoding Hindi source sentences) and the
 - The CHRF++ train-val gap (~9.1 at epoch 18) is comparable to the BLEU gap, confirming consistent overfitting behavior.
 - Val CHRF++ plateaus slightly earlier than val BLEU, around epoch 11 (~35.1).
 
-### 7.2 Convergence Analysis
+### 7.2 Training Curves (BERT Embeddings, 18 Epochs)
+
+#### Loss Curves
+
+| Epoch | Train Loss | Val Loss |
+|-------|-----------|----------|
+| 1 | 6.984 | 5.891 |
+| 3 | 4.407 | 4.217 |
+| 6 | 3.779 | 3.931 |
+| 9 | 3.544 | 3.861 |
+| 12 | 3.418 | 3.841 |
+| 15 | 3.376 | 3.846 |
+| 18 | 3.440 | 3.853 |
+
+**Observations**:
+- **Faster early descent**: The first 3 epochs drop the train loss from 6.98 → 4.41, sharper than the random run.
+- **Earlier optimum**: Validation loss reaches its minimum at **epoch 12**, then flattens, signaling earlier convergence.
+- **Smoother validation curve**: After epoch 6, val loss changes are small, indicating stable optimization with pretrained embeddings.
+
+#### BLEU-100 Curves
+
+| Epoch | Train BLEU | Val BLEU |
+|-------|-----------|----------|
+| 1 | 1.36 | 1.30 |
+| 3 | 9.40 | 8.11 |
+| 6 | 14.36 | 10.75 |
+| 9 | 20.22 | 10.96 |
+| 12 | 22.75 | 11.40 |
+| 15 | 25.19 | 12.04 |
+| 18 | 25.16 | 12.34 |
+
+**Observations**:
+- **Consistent val BLEU lead** over random from epoch 3 onward (+0.4 to +1.5 BLEU).
+- **Train BLEU rises quickly** and exceeds 25 by epoch 15, widening the train-val gap.
+
+#### CHRF++-100 Curves
+
+| Epoch | Train CHRF++ | Val CHRF++ |
+|-------|-------------|-----------|
+| 1 | 12.83 | 13.21 |
+| 3 | 31.41 | 30.44 |
+| 6 | 38.45 | 34.07 |
+| 9 | 43.04 | 34.76 |
+| 12 | 46.08 | 35.46 |
+| 15 | 48.56 | 36.03 |
+| 18 | 48.18 | 36.21 |
+
+**Observations**:
+- CHRF++ improves steadily with a stronger training curve than random.
+- Validation CHRF++ peaks at epoch 18 (36.21), ~1 point above random.
+
+### 7.3 Convergence Analysis
 
 The training dynamics exhibit three distinct phases:
 
@@ -407,25 +508,32 @@ The training dynamics exhibit three distinct phases:
 
 ## 8. Evaluation Results
 
-### 8.1 Final Metrics (Random Embeddings)
+### 8.1 Final Metrics (Epoch 18)
 
-| Metric | Train | Validation | Scale |
-|--------|-------|-----------|-------|
-| **Loss** | 3.903 | 3.965 | — |
-| **BLEU-100** | 20.82 | 11.35 | 0–100 |
-| **CHRF++-100** | 44.36 | 35.26 | 0–100 |
+| Metric | Random (Train) | Random (Val) | BERT (Train) | BERT (Val) | Scale |
+|--------|----------------|--------------|--------------|------------|-------|
+| **Loss** | 3.903 | 3.965 | 3.440 | 3.853 | — |
+| **BLEU-100** | 20.82 | 11.35 | 25.16 | 12.34 | 0–100 |
+| **CHRF++-100** | 44.36 | 35.26 | 48.18 | 36.21 | 0–100 |
 
-### 8.2 Test Set Evaluation
+### 8.2 Best Checkpoints (by Val Loss)
 
-The model was evaluated on the full test set (~10,390 sentence pairs) using the **best checkpoint** (selected by lowest validation loss, epoch 14).
+| Experiment | Best Epoch | Val Loss | Val BLEU-100 | Val CHRF++-100 |
+|------------|------------|----------|--------------|----------------|
+| Random | 14 | 3.958 | 11.23 | 35.25 |
+| BERT | 12 | 3.841 | 11.40 | 35.46 |
 
-The test translations file (`test_translations.txt`) contains 41,561 lines with `SRC/REF/HYP` triplets for every test sentence, enabling detailed qualitative analysis.
+### 8.3 Test Set Evaluation
+
+Both models were evaluated on the full test set (~10,390 sentence pairs) using their best checkpoints (random: epoch 14, BERT: epoch 12).
+
+The test translations files (`test_translations.txt`) contain `SRC/REF/HYP` triplets for every test sentence, enabling detailed qualitative analysis for both experiments.
 
 ---
 
 ## 9. Qualitative Analysis
 
-### 9.1 Strong Translation Examples
+### 9.1 Strong Translation Examples (Random Embeddings)
 
 **Example 1 — Near-perfect translation**:
 | | Text |
@@ -463,7 +571,25 @@ Exact match — the model handles common expressions flawlessly.
 
 Nearly perfect — correct translation of "butter" (मक्खन → लोणी), "sunlight" (धूप → ऊन), and "vitamin D" terminology.
 
-### 9.2 Weak Translation Examples
+### 9.2 Comparative Examples (Random vs. BERT)
+
+**Example 1 — Medical sentence clarity**:
+| | Text |
+|---|---|
+| SRC | यदि श्वास प्रणालिका में सूजन आ जाये तब भी रक्त मुँह के रास्ते बाहर आने लगता है । |
+| REF | जर श्वासनलिकेला सूज आली तरीही रक्त तोंडावाटे बाहेर येऊ लागते. |
+| HYP (Random) | जर श्वासनलिकेत सूज येते तेव्हा रक्त रक्तक्षयाच्या बाहेर येऊ लागते. |
+| HYP (BERT) | जर श्वासप्रवाहिकाला सूज आली असेल तरही रक्त तोंडाच्या रस्त्याने बाहेर येऊ लागतो. |
+
+**Example 2 — Long descriptive sentence**:
+| | Text |
+|---|---|
+| SRC | चारों ओर घिरा वन प्रदेश, घाटी में बादलों की लुकाछिपी, ठंडी हवाएँ और धुंध की चादर में लिपटी बर्फीली चोटियाँ, किसी परीलोक का ही दृश्य उपस्थित करती हैं । |
+| REF | चारी बाजुंनी वेढलेला वनप्रदेश, दर्यामधील ढगांचा लपंडाव, थंड हवा आणि धुक्याची चादर पांघरलेली बर्फाच्छादित पर्वतशिखरे कोण्या परीलोकाचा देखावा उभा करतात. |
+| HYP (Random) | चारही बाजूला दाट काळे प्रदेश, दरीमध्ये ढगांचा लकापी, थंड हवा आणि धुळ्याच्या चादरात लपेटलेली बर्फाच्छादित शिखरे, कोीलोकचेच दृश्य करतात. |
+| HYP (BERT) | चारही बाजूला दाट जंगलाचा, खोऱ्यातरीत चमकणारे, थंड हवा आणि धुक्याच्या चादरात लपेटलेली बर्फाच्छादित शिखर, एखाद्यावरील काचकाचचच. |
+
+### 9.3 Weak Translation Examples
 
 **Example 1 — Word repetition**:
 | | Text |
@@ -491,7 +617,7 @@ The model captures the general meaning ("dense forest region, clouds in the vall
 
 The model incorrectly generates "288.71" instead of "258.71" — a common failure mode where the decoder confuses similar-looking Devanagari digits.
 
-### 9.3 Translation Quality Patterns
+### 9.4 Translation Quality Patterns
 
 | Aspect | Observation |
 |--------|-------------|
@@ -523,6 +649,8 @@ The most prominent failure is the ~9.5 BLEU point gap between train (20.82) and 
 - Aggressive teacher forcing decay (reaching 0.3-0.4 by final epoch)
 - Data augmentation (back-translation, word dropout)
 - Reducing model capacity (hidden_dim=256)
+
+**BERT-specific note**: The BERT run shows an even larger train-val BLEU gap (12.83), indicating higher overfitting risk when pretrained embeddings are fully fine-tuned without additional regularization.
 
 ### 10.2 Repetition Loops
 
@@ -634,16 +762,18 @@ All architectural decisions (attention mechanism choice, embedding strategy, hyp
 
 This report presents a complete LSTM-based Seq2Seq NMT system for Hindi–Marathi translation with Bahdanau attention, trained on the provided parallel corpus using 2× T4 GPUs with DDP.
 
-### Key Results (Random Embeddings):
-- **Validation BLEU-100**: 11.35
-- **Validation CHRF++-100**: 35.26
-- **Best Validation Loss**: 3.958 (epoch 14)
+### Key Results (Random vs. BERT):
+- **Random Validation BLEU-100**: 11.35
+- **Random Validation CHRF++-100**: 35.26
+- **BERT Validation BLEU-100**: 12.34
+- **BERT Validation CHRF++-100**: 36.21
+- **Best Validation Loss**: 3.841 (BERT, epoch 12)
 
 ### Key Findings:
 
 1. **Architecture**: The combination of bidirectional LSTM encoder + Bahdanau attention + 3-way output projection provides a solid baseline for Hindi–Marathi NMT. The shared Devanagari script makes shared BPE tokenization and tied embeddings particularly effective.
 
-2. **Training Dynamics**: The model converges rapidly in the first 5 epochs, then enters a diminishing returns phase. Overfitting becomes apparent after epoch 10, with train metrics continuing to improve while validation metrics plateau.
+2. **Training Dynamics**: Both runs converge rapidly in the first 5 epochs, then enter a diminishing returns phase. BERT converges earlier (best val loss at epoch 12) but shows a larger train-val gap.
 
 3. **Translation Quality**: The model produces fluent Marathi translations for short-to-medium sentences, with quality degradation on long sentences and occasional repetition loops.
 
@@ -651,15 +781,15 @@ This report presents a complete LSTM-based Seq2Seq NMT system for Hindi–Marath
 
 ### Future Work:
 
-1. **Complete BERT experiment**: Run the BERT embedding experiment using `configs/colab_bert.yaml` for the comparative analysis.
-2. **Beam search evaluation**: Evaluate with beam search decoding to potentially improve BLEU by 1-3 points.
-3. **Stronger regularization**: Explore higher dropout, more aggressive TF decay, and data augmentation.
-4. **Coverage attention**: Add coverage mechanism to address repetition and ensure complete source coverage.
-5. **Scheduled sampling**: Implement more sophisticated scheduled sampling strategies (e.g., exponential decay, inverse sigmoid).
+1. **Beam search evaluation**: Evaluate with beam search decoding to potentially improve BLEU by 1-3 points.
+2. **Regularize pretrained embeddings**: Try partial freezing, lower LR on embedding layers, or stronger dropout to reduce BERT overfitting.
+3. **Coverage attention**: Add coverage mechanism to address repetition and ensure complete source coverage.
+4. **Scheduled sampling**: Implement more sophisticated scheduled sampling strategies (e.g., exponential decay, inverse sigmoid).
+5. **Data augmentation**: Explore back-translation or word dropout to improve generalization.
 
 ---
 
-## Appendix A: Training History (Full Epoch-wise Data)
+## Appendix A1: Training History (Random Embeddings)
 
 | Epoch | Train Loss | Val Loss | Train BLEU | Val BLEU | Train CHRF++ | Val CHRF++ |
 |-------|-----------|----------|------------|----------|-------------|-----------|
@@ -681,6 +811,29 @@ This report presents a complete LSTM-based Seq2Seq NMT system for Hindi–Marath
 | 16 | 3.8326 | 3.9593 | 19.65 | 11.34 | 44.23 | 35.43 |
 | 17 | 3.8623 | 3.9634 | 20.60 | 11.31 | 44.59 | 35.25 |
 | 18 | 3.9031 | 3.9647 | 20.82 | 11.35 | 44.36 | 35.26 |
+
+## Appendix A2: Training History (BERT Embeddings)
+
+| Epoch | Train Loss | Val Loss | Train BLEU | Val BLEU | Train CHRF++ | Val CHRF++ |
+|-------|-----------|----------|------------|----------|-------------|-----------|
+| 1 | 6.9845 | 5.8914 | 1.36 | 1.30 | 12.83 | 13.21 |
+| 2 | 5.2141 | 4.6001 | 4.99 | 5.39 | 25.57 | 24.85 |
+| 3 | 4.4069 | 4.2165 | 9.40 | 8.11 | 31.41 | 30.44 |
+| 4 | 4.0880 | 4.0537 | 10.26 | 8.72 | 33.68 | 31.76 |
+| 5 | 3.9068 | 3.9770 | 11.71 | 9.85 | 35.79 | 32.93 |
+| 6 | 3.7791 | 3.9306 | 14.36 | 10.75 | 38.45 | 34.07 |
+| 7 | 3.6844 | 3.8980 | 15.35 | 10.82 | 38.90 | 34.76 |
+| 8 | 3.6062 | 3.8810 | 17.37 | 10.73 | 40.70 | 34.59 |
+| 9 | 3.5440 | 3.8614 | 20.22 | 10.96 | 43.04 | 34.76 |
+| 10 | 3.4921 | 3.8526 | 20.78 | 11.42 | 44.50 | 35.68 |
+| 11 | 3.4459 | 3.8452 | 22.15 | 11.58 | 45.63 | 35.89 |
+| 12 | 3.4183 | 3.8405 | 22.75 | 11.40 | 46.08 | 35.46 |
+| 13 | 3.3920 | 3.8426 | 22.49 | 11.84 | 45.49 | 35.93 |
+| 14 | 3.3762 | 3.8445 | 23.52 | 11.91 | 46.75 | 36.01 |
+| 15 | 3.3764 | 3.8457 | 25.19 | 12.04 | 48.56 | 36.03 |
+| 16 | 3.3837 | 3.8478 | 25.61 | 11.90 | 48.51 | 35.87 |
+| 17 | 3.4103 | 3.8517 | 26.22 | 12.26 | 48.72 | 36.03 |
+| 18 | 3.4405 | 3.8528 | 25.16 | 12.34 | 48.18 | 36.21 |
 
 ## Appendix B: Project Structure
 

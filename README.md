@@ -2,16 +2,18 @@
 
 LSTM Seq2Seq + Bahdanau Attention model for Hindi to Marathi translation, built with PyTorch.
 
-This repository is configured for Kaggle only and requires exactly 2x T4 GPUs.
+This repository can train on Kaggle 2x T4 GPUs or locally on a single CUDA GPU.
+The local path has been verified against a Windows global Python environment with
+PyTorch `2.5.1+cu121` and a 4 GB NVIDIA GeForce GTX 1650.
 
-## Kaggle 2x T4 Training (Required)
+## Training Profiles
 
 Two experiment profiles are provided:
 
 - `configs/colab_random.yaml`: LSTM Seq2Seq with randomly initialized shared BPE embeddings.
 - `configs/colab_bert.yaml`: same LSTM Seq2Seq architecture with Hindi/Marathi BERT-initialized embedding tables.
 
-Both profiles enable CUDA, FP16 AMP, pinned-memory DataLoaders, persistent workers, length-bucketed batching (single-GPU only), OneCycleLR, label smoothing, and sampled train/validation BLEU-100 and CHRF++-100 logging. Training uses the full dataset.
+Both profiles enable CUDA, FP16 AMP, pinned-memory DataLoaders, persistent workers, length-bucketed batching on single-GPU runs, OneCycleLR, label smoothing, and sampled train/validation BLEU-100 and CHRF++-100 logging. Training uses the full dataset.
 
 ## Project Structure
 
@@ -54,6 +56,48 @@ outputs/                  # Generated at runtime
     mlruns/                 # Optional MLflow experiment logs
 ```
 
+## Local Single-GPU Setup
+
+The main local command uses the global Python environment:
+
+```bash
+python scripts/train.py --config configs/colab_random.yaml
+```
+
+On a 4 GB GTX GPU, the trainer automatically keeps the configured effective
+batch size and splits each batch into smaller internal CUDA microbatches when
+needed. This avoids changing the committed hyperparameters while keeping memory
+use realistic for local hardware.
+
+To verify the active Python/PyTorch/CUDA environment:
+
+```bash
+python --version
+python -c "import torch, sys; print(sys.executable); print(torch.__version__); print(torch.cuda.is_available()); print(torch.version.cuda); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')"
+nvidia-smi
+```
+
+Install requirements if needed:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Run preprocessing explicitly, or let `scripts/train.py` bootstrap it if the
+processed files/tokenizer are missing:
+
+```bash
+python scripts/preprocess.py --config configs/colab_random.yaml
+python scripts/train.py --config configs/colab_random.yaml
+```
+
+Evaluate using the best checkpoint:
+
+```bash
+python scripts/evaluate.py --config configs/colab_random.yaml --checkpoint outputs/colab_random/checkpoints/best.pt
+```
+
 ## Kaggle 2x T4 Setup
 
 1) In Kaggle, enable a 2x T4 GPU accelerator.
@@ -88,10 +132,15 @@ python scripts/evaluate.py --config configs/colab_random.yaml --checkpoint outpu
 ```
 
 Repeat with `configs/colab_bert.yaml` for the BERT-initialized experiment.
+The first BERT run downloads the L3Cube Hindi and Marathi BERT checkpoints via
+the Hugging Face cache. After the BERT vectors are converted into this
+project's BPE embedding tables, they are saved under `outputs/bert_embeddings/`
+and reused on later runs.
 
 Notes:
-- Training will error if it does not detect exactly two T4 GPUs.
-- Total batch size scales with GPU count. If you hit OOM, lower `training.batch_size`.
+- On local Windows single-GPU runs, DDP is disabled automatically.
+- On Linux multi-GPU runs, DDP is used when `training.distributed_enable` is true.
+- On 4 GB CUDA cards, internal microbatching keeps the configured effective batch size while reducing peak memory.
 - Only rank 0 logs metrics, writes checkpoints, and creates plots.
 
 ## Preprocessing Behavior
@@ -119,6 +168,7 @@ Preprocessing keeps Hindi and Marathi sentence pairs aligned at every step.
 - Pinned-memory DataLoaders with persistent workers reduce input stalls.
 - Bucketed batches reduce padding and wasted compute.
 - OneCycleLR and label smoothing stabilize optimization for faster convergence.
+- Small local CUDA cards use internal gradient accumulation over microbatches.
 
 ## Evaluation Metrics
 
@@ -126,6 +176,20 @@ All scores use a 0-100 scale:
 
 - BLEU-100: corpus-level BLEU via sacrebleu
 - CHRF++-100: character n-gram F-score with word bigrams via sacrebleu
+
+## Results Summary
+
+Best checkpoints are selected by lowest validation loss.
+
+| Experiment | Best Epoch | Val Loss | Val BLEU-100 | Val CHRF++-100 |
+|-----------|------------|----------|--------------|----------------|
+| Random embeddings | 14 | 3.958 | 11.23 | 35.25 |
+| BERT embeddings | 12 | 3.841 | 11.40 | 35.46 |
+
+Training curves and metric logs are available under:
+
+- `outputs/colab_random/plots/`
+- `outputs/colab_bert/plots/`
 
 ## Outputs
 
@@ -140,8 +204,10 @@ Generated artifacts are written under `outputs/`:
 
 ## Notes
 
-- Only 2x T4 GPUs are supported.
+- Local single-GPU CUDA training is supported.
 - `configs/colab_random.yaml` and `configs/colab_bert.yaml` use `device: cuda`.
+- BERT-initialized runs require the Hugging Face BERT checkpoints once; cached
+  embedding tables are reused after that first successful build.
 - Training uses the full dataset by default (`max_train_examples: null`).
 - MLflow tracking stays off unless you enable it in the config.
 
